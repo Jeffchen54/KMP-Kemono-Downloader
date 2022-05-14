@@ -20,6 +20,7 @@ Using multithreading
 # Settings ###################################################
 folder = r"C:/Users/chenj/Downloads/KMPDownloader/content/"
 CHUNK_SIZE = 1024 * 1024 * 64
+TIME_BETWEEN_CHUNKS = 1  # Required to not mimic a DDOS attack
 THREADS = 6
 # URL specific variables <MODIFY AT YOUR RISK> ###############
 dataPrefix = "https://data10.kemono.party"
@@ -176,6 +177,7 @@ def download_file(src:str, fname:str, tname:str) -> None:
          fd.write(chunk)
          print(tname + " Progress: " + str(downloaded) + " / " + str(fsize) + " (" + str(int((downloaded/fsize) * 100)) + "%)")
          chunk = resp.read(CHUNK_SIZE)
+         time.sleep(TIME_BETWEEN_CHUNKS)
 
 def download_all_files(imgLinks:ResultSet, dir:str)->None:
    """
