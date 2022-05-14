@@ -6,7 +6,7 @@ Instructions:
 - Download all required dependencies
 - Edit Settings near the top of KMPDownloader.py. folder is the only required setting
 - Run in your favoriate command line software
-- Enter in a url of an artist home page (https://kemono.party/fanbox/user/xxxxxxxx)
+- Enter in a url of an artist home page (Follows this format: https://kemono.party/fanbox/user/xxxxxxxx)
 - Enjoy!
 
 Changelog 0.2:
