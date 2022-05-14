@@ -1,11 +1,10 @@
-from concurrent.futures import process
 from multiprocessing import Semaphore
+import threading
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import urllib.request
 import os
 import re
-import _thread
 import queue
 from typing import TypeVar, Generic
 import time
@@ -130,18 +129,26 @@ class KVPair (Generic[T,V]):
         """
         return self.__tombstone
 
-def thread_job():
-   while True:
-      # Wait until download is available
-      downloadables.acquire()
+class downThread(threading.Thread):
+   __name:str
+   def __init__(self, id:int):
+      super(downThread, self).__init__()
+      self.__name = "Thread #" + str(id)
 
-      # Check kill signal
-      if kill:
-         return
-      
-      # Pop queue and download it
-      todo:KVPair[str,str] = download_queue.get()
-      download_file(todo.getKey(), todo.getValue())
+   def run(self):
+      while True:
+         # Wait until download is available
+         downloadables.acquire()
+
+         # Check kill signal
+         if kill:
+            print(self.__name + " has finished")
+            return
+         
+         # Pop queue and download it
+         todo:KVPair[str,str] = download_queue.get()
+         download_file(todo.getKey(), todo.getValue(), self.__name)
+   
 
 
 def trim_fname(fname:str) -> str:
@@ -152,7 +159,7 @@ def trim_fname(fname:str) -> str:
    second = first[0].split("/")
    return second[len(second) - 1]
 
-def download_file(src:str, fname:str) -> None:
+def download_file(src:str, fname:str, tname:str) -> None:
    """
    Downloads file at src
    """
@@ -165,7 +172,7 @@ def download_file(src:str, fname:str) -> None:
       while chunk:
          downloaded += len(chunk)
          fd.write(chunk)
-         print("Progress: " + str(downloaded) + " / " + str(fsize) + " (" + str(int((downloaded/fsize) * 100)) + "%)")
+         print(tname + " Progress: " + str(downloaded) + " / " + str(fsize) + " (" + str(int((downloaded/fsize) * 100)) + "%)")
          chunk = resp.read(CHUNK_SIZE)
 
 def download_all_files(imgLinks:ResultSet, dir:str)->None:
@@ -244,7 +251,8 @@ def main():
    threads = []
    # Spawn threads 
    for i in range (0, THREADS):
-      threads.append(_thread.start_new_thread(thread_job, ()))
+      threads.append(downThread(i))
+      threads[i].start()
 
    # Get url to download
    url = input("Input a url> ")
@@ -252,7 +260,14 @@ def main():
    while not download_queue.empty:      
       time.sleep(5)
 
-   # Kill switch not needed since all threads terminate when main thread terminates
+   global kill
+   kill = True
+   
+   for i in range (0, THREADS):
+      downloadables.release()
+
+   for i in threads:
+      i.join()
 
 if __name__ == "__main__":
     main()
