@@ -149,6 +149,7 @@ class downThread(threading.Thread):
          # Pop queue and download it
          todo:KVPair[str,str] = download_queue.get()
          download_file(todo.getKey(), todo.getValue(), self.__name)
+         download_queue.task_done()
    
 
 
@@ -258,8 +259,9 @@ def main():
    # Get url to download
    url = input("Input a url> ")
    process_window(url)
-   while not download_queue.empty:      
-      time.sleep(5)
+
+   # Wait until queue is empty
+   download_queue.join()
 
    global kill
    kill = True
