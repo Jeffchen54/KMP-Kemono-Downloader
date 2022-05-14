@@ -11,7 +11,7 @@ Instructions:
 - Enjoy!
 
 Known bugs:
-- No DDOS guard countermeasures, leading to 404 errors (solution is to use a VPN for now and decrasign download rate)
+- No DDOS guard countermeasures, leading to 404 errors (solution is to use a VPN for now and decreasing download rate)
 - post_content.txt may contain garbage data at times
 
 Changelog 0.2:
