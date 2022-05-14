@@ -1,9 +1,14 @@
 from concurrent.futures import process
+from multiprocessing import Semaphore
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import urllib.request
 import os
 import re
+import _thread
+import queue
+from typing import TypeVar, Generic
+import time
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
@@ -13,13 +18,132 @@ Simple kemono.party downloader relying on html parsing and download by url
 """
 
 # Settings ###################################################
-folder = r"C:/Users/chenj/Downloads/Fun2/samples/"
+folder = r"C:/Users/chenj/Downloads/KMPDownloader/content/"
 CHUNK_SIZE = 1024 * 1024 * 64
+THREADS = 6
 # URL specific variables <MODIFY AT YOUR RISK> ###############
 dataPrefix = "https://data10.kemono.party"
 containerPrefix = "https://kemono.party"
 delimiter = "#"
 ##############################################################
+kill = False
+download_queue = queue.Queue(-1)
+downloadables = Semaphore(0)
+T = TypeVar('T')
+V = TypeVar('V')
+
+class Error(Exception):
+    """Base class for other exceptions"""
+    pass
+
+class MismatchTypeException(Error):
+    """Raised when a comparison is made on 2 different types"""
+    pass
+
+class KVPair (Generic[T,V]):
+    """
+    Generic KVPair structure where:
+        Key is generic V
+        Value is generic T
+        Tombstone is bool & optional
+    Upon initiailization, data becomes read-only
+    """
+    __key: V
+    __value: T
+    __tombstone: bool
+
+    def __init__(self, key: V, value: T) -> None:
+        """
+        Initializes KVPair. Tombstone is disabled by default.
+
+        Param
+            key: key (use to sort)
+            value: value (data)
+
+        """
+        self.__value = value
+        self.__key = key
+        self.__tombstone = False
+
+    def getKey(self) -> V:
+        """
+        Returns key
+        Return: key
+        """
+        return self.__key
+
+    def getValue(self) -> T:
+        """
+        Returns value
+        Return: value
+        """
+        return self.__value
+
+    def compareTo(self, other) -> int:
+        """
+        Compares self and other key value. Ignores generic typing
+
+        Raise: MismatchTypeException if other is not a KVPair\n
+        Return:
+            self.getKey() > other.getKey() -> 1\n
+            self.getKey() == other.getKey() -> 0\n
+            self.getKey() < other.getKey() -> -1\n
+
+        """
+        if other == None or not isinstance(other, KVPair):
+            raise MismatchTypeException("other is not of type KVPair(V,T)")
+
+        if self.__key > other.getKey():
+            return 1
+        if self.__key == other.getKey():
+            return 0
+        return -1
+
+    def __str__(self) -> str:
+        """
+        toString function which returns KVPair in json style formatting
+        {key:<keyval>, value:<val>, Tomb:<val>}
+
+        value relies on T's __str__ function
+
+        Return: KVPair in json style format
+        """
+        return "{key:" + str(self.__key) + ", value:" + str(self.__value) + ", Tomb:" + ("T" if self.__tombstone else "F") + "}"
+
+    def setTombstone(self) -> None:
+        """
+        Turns on tombstone
+        """
+        self.__tombstone = True
+
+    def disableTombstone(self) -> None:
+        """
+        Turns off tombstone
+        """
+        self.__tombstone = False
+
+    def isTombstone(self) -> bool:
+        """
+        Returns tombstone status
+
+        Return true if set, false if disabled
+        """
+        return self.__tombstone
+
+def thread_job():
+   while True:
+      # Wait until download is available
+      downloadables.acquire()
+
+      # Check kill signal
+      if kill:
+         return
+      
+      # Pop queue and download it
+      todo:KVPair[str,str] = download_queue.get()
+      download_file(todo.getKey(), todo.getValue())
+
+
 def trim_fname(fname:str) -> str:
    """
    Trims fname, returns result. Extensions are kept
@@ -45,11 +169,15 @@ def download_file(src:str, fname:str) -> None:
          chunk = resp.read(CHUNK_SIZE)
 
 def download_all_files(imgLinks:ResultSet, dir:str)->None:
+   """
+   Puts all urls in imgLinks into download queue
+   """
    counter = 0
    for link in imgLinks:
       download = link.get('href')
       extension = (download.split('.'))
-      download_file(dataPrefix + download,  dir + str(counter) + "." + extension[len(extension) - 1])
+      download_queue.put(KVPair[str,str](dataPrefix + download, dir + str(counter) + "." + extension[len(extension) - 1]))
+      downloadables.release()
       counter += 1
 
 def process_container(url:str, root:str)->None:
@@ -79,7 +207,8 @@ def process_container(url:str, root:str)->None:
    if attachments:
          for attachment in attachments:
             download = attachment.get('href')
-            download_file(dataPrefix + download, titleDir + trim_fname(download))
+            download_queue.put(KVPair[str,str](dataPrefix + download, titleDir + trim_fname(download)))
+            downloadables.release()
    print("Wrote post contents to file")
 
 def process_window(url:str)->None:
@@ -90,7 +219,7 @@ def process_window(url:str)->None:
    artist = soup.find("meta", attrs={'name': 'artist_name'})
    titleDir = folder + re.sub(r'[^\w\-_\. ]', '_', artist.get('content')) + "/"
    if not os.path.isdir(titleDir):
-      os.mkdir(titleDir)
+      os.makedirs(titleDir)
 
    contLinks = soup.find_all("div", class_="post-card__link")
    suffix = "?o="
@@ -112,10 +241,18 @@ def process_window(url:str)->None:
    print("Download completed")
 
 def main():
+   threads = []
+   # Spawn threads 
+   for i in range (0, THREADS):
+      threads.append(_thread.start_new_thread(thread_job, ()))
+
    # Get url to download
    url = input("Input a url> ")
    process_window(url)
+   while not download_queue.empty:      
+      time.sleep(5)
 
+   # Kill switch not needed since all threads terminate when main thread terminates
 
 if __name__ == "__main__":
     main()
