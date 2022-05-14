@@ -11,8 +11,9 @@ import time
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
+Using multithreading
 @author Jeff Che1
-@version 0.1
+@version 0.2
 @last modified 5/13/2022
 """
 
