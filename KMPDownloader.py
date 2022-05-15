@@ -14,23 +14,15 @@ import cfscrape
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 
-- Bulk download supporting post, single page, and all artist posts
-- Check when entering invalid urls
-- Robustness upgrades
-- Slight memory optimization
-- Fixed bug where file names were not being isolated properly
-- Switch to cfscrape library to mitigate cloudflare issues
-- Fixed issues where incomplete downloads would occur to large files
-- Multithreading can be done across multiple urls in bulk download file instead of one
-- Fixed issue where large files would not be downloaded entirely
+- Returned chunked download to save memory and progress indicator
 @author Jeff Chen
-@version 0.3
+@version 0.3.1
 @last modified 5/14/2022
 """
 
 # Settings ###################################################
 folder = r"D:/User Files/Personal/Cloud Drive/MEGAsync/Nonsensitive/Best/Package/Pixiv/~unsorted/"
-CHUNK_SIZE = 1024 * 1024 * 64 # Chunk size of downloads TODO implement in download_files
+CHUNK_SIZE = 1024 * 1024 * 64 # Higher chunk size gives speed bonus at high memory cost
 TIME_BETWEEN_CHUNKS = 2  # Time between Internet activities
 THREADS = 6                # Number of threads, note that download size is bottleneck by numerous factors
                            # More threads boost speed of downlaoding many small files but will not if
@@ -123,18 +115,22 @@ def download_file(src:str, fname:str, tname:str) -> None:
 
       # Download file to memory
       print(tname + " downloading " + src, flush=True)
-      data = scraper.get(src)
+      data = scraper.get(src, stream=True)
 
       # Loop until download size matches real size
+      print(tname + ": Downloaded -> Real: " + fullsize + " Actual: " + data.headers.get('Content-Length'), flush=True)
       while(data.headers.get('Content-Length') != fullsize):
-         print(tname + ": Fragmented downloaded -> Real: " + fullsize + " Actual: " + data.headers.get('Content-Length'), flush=True)
          print("Restarting download", flush=True)
          data = scraper.get(src)
 
       # Download the file
+      downloaded = 0
       with open(fname, 'wb') as fd:
-         fd.write(data.content)
-         fd.flush()
+         for chunk in data.iter_content(chunk_size=CHUNK_SIZE):
+            downloaded += len(chunk)
+            fd.write(chunk)
+            fd.flush()
+            print(tname + ": Downloaded " + str(downloaded) + " / " + fullsize + " (" + str(int((downloaded/int(fullsize) * 100))) + "%)", flush=True)  
       print(tname + " download complete", flush=True)
       scraper.close()
 
