@@ -21,6 +21,13 @@ KMPDownloader.py -h : Help
   
 KMPDownloader.py : Prompts user to enter a url
 
+## Bulk file
+  An example bulk file has been included "examples.txt"
+  
+  You can run using: KMPDownloader.py -d C:/Users/chenj/Downloads/KMPDownloader/ -f C:/Users/chenj/Downloads/KMPDownloader/example.txt
+  
+  Replace the path to file before running. Bulk file downloads safe content only. Check KMPDownloader folder after download is completed. 
+  
 ## Supported URL formats:
 
 https://kemono.party/service/user/xxxxxx: Downloads all artist works
