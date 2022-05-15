@@ -1,145 +1,63 @@
 from multiprocessing import Semaphore
 import threading
+from urllib.error import HTTPError, URLError
 import requests
 from bs4 import BeautifulSoup, ResultSet
-import urllib.request
 import os
 import re
 import queue
-from typing import TypeVar, Generic
 import time
+import sys
+import cfscrape
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-@author Jeff Che1
-@version 0.2
-@last modified 5/13/2022
+
+- Bulk download with file containing all artist main window links
+- Robustness upgrades
+- Slight memory optimization
+- Fixed bug where file names were not being isolated properly
+- Switch to cfscrape library to mitigate cloudflare issues
+@author Jeff Chen
+@version 0.3
+@last modified 5/14/2022
 """
 
 # Settings ###################################################
-folder = r"C:/Users/chenj/Downloads/KMPDownloader/content/"
-CHUNK_SIZE = 1024 * 1024 * 64
-TIME_BETWEEN_CHUNKS = 1  # Required to not mimic a DDOS attack
-THREADS = 6
+folder = r"D:/User Files/Personal/Cloud Drive/MEGAsync/Nonsensitive/Best/Package/Pixiv/~unsorted/"
+CHUNK_SIZE = 1024 * 1024 * 64 # Chunk size of downloads
+TIME_BETWEEN_CHUNKS = 2  # Required to not mimic a DDOS attack, DDOS guard may be triggered if you download too many files too quickly
+THREADS = 6                # Number of threads
 # URL specific variables <MODIFY AT YOUR RISK> ###############
-dataPrefix = "https://data10.kemono.party"
 containerPrefix = "https://kemono.party"
-delimiter = "#"
 ##############################################################
-kill = False
-download_queue = queue.Queue(-1)
-downloadables = Semaphore(0)
-T = TypeVar('T')
-V = TypeVar('V')
-
-class Error(Exception):
-    """Base class for other exceptions"""
-    pass
-
-class MismatchTypeException(Error):
-    """Raised when a comparison is made on 2 different types"""
-    pass
-
-class KVPair (Generic[T,V]):
-    """
-    Generic KVPair structure where:
-        Key is generic V
-        Value is generic T
-        Tombstone is bool & optional
-    Upon initiailization, data becomes read-only
-    """
-    __key: V
-    __value: T
-    __tombstone: bool
-
-    def __init__(self, key: V, value: T) -> None:
-        """
-        Initializes KVPair. Tombstone is disabled by default.
-
-        Param
-            key: key (use to sort)
-            value: value (data)
-
-        """
-        self.__value = value
-        self.__key = key
-        self.__tombstone = False
-
-    def getKey(self) -> V:
-        """
-        Returns key
-        Return: key
-        """
-        return self.__key
-
-    def getValue(self) -> T:
-        """
-        Returns value
-        Return: value
-        """
-        return self.__value
-
-    def compareTo(self, other) -> int:
-        """
-        Compares self and other key value. Ignores generic typing
-
-        Raise: MismatchTypeException if other is not a KVPair\n
-        Return:
-            self.getKey() > other.getKey() -> 1\n
-            self.getKey() == other.getKey() -> 0\n
-            self.getKey() < other.getKey() -> -1\n
-
-        """
-        if other == None or not isinstance(other, KVPair):
-            raise MismatchTypeException("other is not of type KVPair(V,T)")
-
-        if self.__key > other.getKey():
-            return 1
-        if self.__key == other.getKey():
-            return 0
-        return -1
-
-    def __str__(self) -> str:
-        """
-        toString function which returns KVPair in json style formatting
-        {key:<keyval>, value:<val>, Tomb:<val>}
-
-        value relies on T's __str__ function
-
-        Return: KVPair in json style format
-        """
-        return "{key:" + str(self.__key) + ", value:" + str(self.__value) + ", Tomb:" + ("T" if self.__tombstone else "F") + "}"
-
-    def setTombstone(self) -> None:
-        """
-        Turns on tombstone
-        """
-        self.__tombstone = True
-
-    def disableTombstone(self) -> None:
-        """
-        Turns off tombstone
-        """
-        self.__tombstone = False
-
-    def isTombstone(self) -> bool:
-        """
-        Returns tombstone status
-
-        Return true if set, false if disabled
-        """
-        return self.__tombstone
+kill = False                     # Thread kill switch
+download_queue = queue.Queue(-1) # Download task queue
+downloadables = Semaphore(0)     # Avalible downloadable resource device
 
 class downThread(threading.Thread):
+   """
+   Basic threadpool setup where threads fetch download tasks from download_queue
+   """
    __name:str
    def __init__(self, id:int):
+      """
+      Initializes thread with a thread name
+      Param: 
+         id: thread identifier
+      """
       super(downThread, self).__init__()
       self.__name = "Thread #" + str(id)
 
-   def run(self):
+   def run(self)->None:
+      """
+      Worker thread job. Blocks until a task is avalable via downloadables
+      and retreives the task from download_queue
+      """
       while True:
          # Wait until download is available
+         print(self.__name + " is ready")
          downloadables.acquire()
 
          # Check kill signal
@@ -148,81 +66,121 @@ class downThread(threading.Thread):
             return
          
          # Pop queue and download it
-         todo:KVPair[str,str] = download_queue.get()
-         download_file(todo.getKey(), todo.getValue(), self.__name)
+         todo = download_queue.get()
+         download_file(todo[0], todo[1], self.__name)
          download_queue.task_done()
+         time.sleep(TIME_BETWEEN_CHUNKS)
    
 
 
 def trim_fname(fname:str) -> str:
    """
-   Trims fname, returns result. Extensions are kept
+   Trims fname, returns result. Extensions are kept:
+   For example
+   "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt?f=File.txt"
+   -> 2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt \n
+   Param: 
+      fname: file name
+   Pre: fname follows above convention
+   Return: trimmed filename with extension
    """
-   first = fname.split("?")
+
+   first = fname.split("?")[0].split("?")
    second = first[0].split("/")
    return second[len(second) - 1]
 
 def download_file(src:str, fname:str, tname:str) -> None:
    """
-   Downloads file at src
+   Downloads file at src. Skips duplicate files
+   Param:
+      src: src of image to download
+      fname: what to name the file to download
+      tname: thread name
    """
-   print("Downloading ", src)
-   resp = urllib.request.urlopen(src) 
-   fsize = int(resp.headers.get('Content-Length').strip())
-   downloaded = 0
-   chunk = resp.read(CHUNK_SIZE)
+
+   try:
+      scraper = cfscrape.create_scraper()
+      data = scraper.get(src).content
+   except (URLError, HTTPError) as e:
+      print(tname + ": Download incomplete, trying again for " + src)
+      print(e.info)
+      exit()
+   print(tname + " downloading " + src)
    with open(fname, 'wb') as fd:
-      while chunk:
-         downloaded += len(chunk)
-         fd.write(chunk)
-         print(tname + " Progress: " + str(downloaded) + " / " + str(fsize) + " (" + str(int((downloaded/fsize) * 100)) + "%)")
-         chunk = resp.read(CHUNK_SIZE)
-         time.sleep(TIME_BETWEEN_CHUNKS)
+      fd.write(data)
+   print(tname + " download complete")
 
 def download_all_files(imgLinks:ResultSet, dir:str)->None:
    """
    Puts all urls in imgLinks into download queue
+   Param:
+      imgLinks: all image links within a container
+      dir: where to save the images
    """
    counter = 0
    for link in imgLinks:
       download = link.get('href')
-      extension = (download.split('.'))
-      download_queue.put(KVPair[str,str](dataPrefix + download, dir + str(counter) + "." + extension[len(extension) - 1]))
+      extension = (trim_fname(download).split('.'))
+      download_queue.put((containerPrefix + download, dir + str(counter) + "." + extension[len(extension) - 1]))
       downloadables.release()
       counter += 1
 
 def process_container(url:str, root:str)->None:
+   """
+   Processes a container which is the page used to store post content
+   Supports
+   - downloading all visable images
+   - content divider (BUG other urls are included)
+   - download divider
+   Param:
+      url: url of the container
+      root: directory to store the content
+   """
    # Get HTML request and parse the HTML for image links and title
+   
    reqs = requests.get(url)
    soup = BeautifulSoup(reqs.text, 'html.parser')
+   while "500 Internal Server Error" in soup.find("title"):
+      print("500 Server error encountered at " + url + ", retrying...")
+      time.sleep(TIME_BETWEEN_CHUNKS)
+      reqs = requests.get(url)
+      soup = BeautifulSoup(reqs.text, 'html.parser')
    imgLinks = soup.find_all("a", class_="fileThumb")
-   titleDir = root + re.sub(r'[^\w\-_\. ]', '_', soup.find("title").contents[0].strip()) + "/"
+   titleDir = root + (re.sub(r'[^\w\-_\. ]', '_', soup.find("title").contents[0]).strip()).split("/")[0] + "/"
    if not os.path.isdir(titleDir):
-      os.mkdir(titleDir)
+      os.mkdir(titleDir)   # 500 internal system error
 
    # Download image links
    download_all_files(imgLinks, titleDir)
 
    # Get post content
    content = soup.find("div", class_="post__content")
+   
    if content:
-      with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
-         fd.write(content.text)
-         links = content.find_all("a")
-         for link in links:
-            url = link.get('href')
-            fd.write("\n" + url)
+      if(os.path.exists(titleDir + "post__content.txt")):
+         print("Skipping duplicate post content")
+      else:
+         with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
+            fd.write(content.text)
+            links = content.find_all("a")
+            for link in links:
+               url = link.get('href')
+               fd.write("\n" + url)
 
    # Download post attachments
    attachments = soup.find_all("a", class_="post__attachment-link")
    if attachments:
          for attachment in attachments:
             download = attachment.get('href')
-            download_queue.put(KVPair[str,str](dataPrefix + download, titleDir + trim_fname(download)))
+            download_queue.put((containerPrefix + download, titleDir + trim_fname(download)))
             downloadables.release()
-   print("Wrote post contents to file")
 
 def process_window(url:str)->None:
+   """
+   Processes a single main artist window
+   Param: 
+      url: url of the main artist window
+   """
    reqs = requests.get(url)
    soup = BeautifulSoup(reqs.text, 'html.parser')
 
@@ -244,22 +202,30 @@ def process_window(url:str)->None:
          process_container(containerPrefix + content.get('href'), titleDir)
       
       # Move to next window
+      time.sleep(TIME_BETWEEN_CHUNKS)
       counter += 25
       reqs = requests.get(url + suffix + str(counter))
       soup = BeautifulSoup(reqs.text, 'html.parser')
       contLinks = soup.find_all("div", class_="post-card__link")
 
-   print("Download completed")
 
-def main():
+def routine(url:str)->None:
+   """
+   Main routine, processes a main artist window using multithreading
+   if url is None, ask for a url
+   Param:
+      url: url of main artist window or None
+   """
+   # Get url to download
+   if url == None:
+      url = input("Input a url> ")
+
    threads = []
    # Spawn threads 
    for i in range (0, THREADS):
       threads.append(downThread(i))
       threads[i].start()
 
-   # Get url to download
-   url = input("Input a url> ")
    process_window(url)
 
    # Wait until queue is empty
@@ -270,9 +236,24 @@ def main():
    
    for i in range (0, THREADS):
       downloadables.release()
-
+   print("Killing threads")
    for i in threads:
       i.join()
+   
+   kill = False
+
+def main()->None:
+   """
+   Program runner
+   """
+   if len(sys.argv) > 1 and sys.argv[1] == "-f":
+      with open(sys.argv[2], "r") as fd:
+         url = fd.readline().strip()
+         while(len(url) > 0):
+            routine(url)
+            url = fd.readline().strip()
+   else:
+      routine(None)
 
 if __name__ == "__main__":
     main()
