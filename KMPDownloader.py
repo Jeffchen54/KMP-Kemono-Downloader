@@ -122,24 +122,24 @@ def download_file(src:str, fname:str, tname:str) -> None:
       fullsize = r.headers.get('Content-Length')
 
       # Download file to memory
-      print(tname + " downloading " + src)
+      print(tname + " downloading " + src, flush=True)
       data = scraper.get(src)
 
       # Loop until download size matches real size
       while(data.headers.get('Content-Length') != fullsize):
-         print(tname + ": Fragmented downloaded -> Real: " + fullsize + " Actual: " + data.headers.get('Content-Length'))
-         print("Restarting download")
+         print(tname + ": Fragmented downloaded -> Real: " + fullsize + " Actual: " + data.headers.get('Content-Length'), flush=True)
+         print("Restarting download", flush=True)
          data = scraper.get(src)
 
       # Download the file
       with open(fname, 'wb') as fd:
          fd.write(data.content)
          fd.flush()
-      print(tname + " download complete")
+      print(tname + " download complete", flush=True)
       scraper.close()
 
    except (URLError, HTTPError) as e:
-      print(tname + ": Download could not be completed for " + src)
+      print(tname + ": Download could not be completed for " + src, flush=True)
       exit()
 
 def download_all_files(imgLinks:ResultSet, dir:str)->None:
@@ -175,7 +175,7 @@ def process_container(url:str, root:str)->None:
    reqs = requests.get(url)
    soup = BeautifulSoup(reqs.text, 'html.parser')
    while "500 Internal Server Error" in soup.find("title"):
-      print("500 Server error encountered at " + url + ", retrying...")
+      print("500 Server error encountered at " + url + ", retrying...", flush=True)
       time.sleep(TIME_BETWEEN_CHUNKS)
       reqs = requests.get(url)
       soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -193,7 +193,7 @@ def process_container(url:str, root:str)->None:
    
    if content:
       if(os.path.exists(titleDir + "post__content.txt")):
-         print("Skipping duplicate post content")
+         print("Skipping duplicate post content", flush=True)
       else:
          with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
             fd.write(content.text)
@@ -268,7 +268,7 @@ def call_and_interpret_url(url:str)->None:
       # Build directory
       reqs = requests.get(url)
       if(reqs.status_code  >= 400):
-         print("Status code " + str(reqs.status_code))
+         print("Status code " + str(reqs.status_code), flush=True)
       soup = BeautifulSoup(reqs.text, 'html.parser')
       artist = soup.find("a", attrs={'class': 'post__user-name'})
       titleDir = folder + re.sub(r'[^\w\-_\. ]', '_', artist.text.strip()) + "/"
@@ -290,6 +290,7 @@ def create_threads(count:int)->list:
    Param:
       count: how many threads to create
    """
+   print("Creating threads", flush=True)
    threads = []
    # Spawn threads 
    for i in range (0, count):
@@ -307,9 +308,10 @@ def kill_threads(threads:list)->None:
    global kill
    kill = True
    
-   for i in range (0, THREADS):
+   for i in range (0, len(threads)):
       downloadables.release()
-   print("Killing threads")
+
+   print("Killing threads", flush=True)
    for i in threads:
       i.join()
    
@@ -346,11 +348,11 @@ def main()->None:
       pointer = 1
       while(len(sys.argv) > pointer):
          if sys.argv[pointer] == '-f' and len(sys.argv) >= pointer:
+            threads = create_threads(THREADS)
             with open(sys.argv[pointer + 1], "r") as fd:
                for line in fd:
                   line = line.strip()
                   if len(line) > 0:
-                     threads = create_threads(THREADS)
                      routine(line)
             pointer += 2
          elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
@@ -365,12 +367,13 @@ def main()->None:
             print("-h : Help")
             exit()
          
-         if not threads:
-            threads = create_threads(THREADS)
-            routine(None)
+      if not threads:
+         threads = create_threads(THREADS)
+         routine(None)
       
          
    else:
+      threads = create_threads(THREADS)
       routine(None)
 
    download_queue.join()
