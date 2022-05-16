@@ -56,6 +56,11 @@ These bugs were accounted for but not enough testing has been conducted
 - DDOS preventing downloads (Does not throw an exception)
 - Large files timing out before downloaded fully (Does not throw an exception)
 
+ ## Changelog 0.3.1
+  - Fixed bug where certain downloads crashed threads when they do not have Contain-Length header
+  - Returned chunked download to save memory and progress indicator
+  - Add setting to automatically unzip files if they are not password protected
+  
 ## Changelog 0.3:
 - Bulk download support of urls for all artist work, single page of artist work, or a single artist work
 - Multithreading optimization where all urls in bulk download file can be loaded up into a queue instead of having to wait for a url to finish downloading
