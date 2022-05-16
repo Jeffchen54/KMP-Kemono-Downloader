@@ -59,9 +59,12 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 
 ## Possible bugs:
 These bugs were accounted for but not enough testing has been conducted
+None
+  
+ ##  Resolved bugs:
 - DDOS preventing downloads (Does not throw an exception)
 - Large files timing out before downloaded fully (Does not throw an exception)
-
+  
  ## Changelog 0.3.2
 - Vastly improve graphical aspect and progress bar
 - Added many more command line switches
