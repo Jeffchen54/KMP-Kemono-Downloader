@@ -11,12 +11,18 @@ Functionality not guaranteed until 1.0, There are known bugs!
 - Enjoy!
 
 ## Command line arguments:
-KMPDownloader.py -f <.txt> : Bulk downloads all links in .txt file
+KMPDownloader.py -f <.txt> : Bulk downloads all links in .txt file, must be last switch used if used
 
 KMPDownloader.py -d <path> : Sets download path for a single download instance, must use /
   
 KMPDownloader.py -d <path> -f <.txt> : Combines above 2 switches
+
+  KMPDownloader.py -v : Enables unzipping of files automatically
   
+  KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
+  
+  KMPDownloader.py -t <#> : Change download thread count (default is 6)
+ 
 KMPDownloader.py -h : Help
   
 KMPDownloader.py : Prompts user to enter a url
@@ -56,6 +62,11 @@ These bugs were accounted for but not enough testing has been conducted
 - DDOS preventing downloads (Does not throw an exception)
 - Large files timing out before downloaded fully (Does not throw an exception)
 
+ ## Changelog 0.3.2
+- Vastly improve graphical aspect and progress bar
+- Added many more command line switches
+- Fixed incomplete download issues
+  
  ## Changelog 0.3.1
   - Fixed bug where certain downloads crashed threads when they do not have Contain-Length header
   - Returned chunked download to save memory and progress indicator
