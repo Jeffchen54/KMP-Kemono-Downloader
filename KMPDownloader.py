@@ -401,7 +401,7 @@ def main() -> None:
         pointer = 1
         while(len(sys.argv) > pointer):
             if sys.argv[pointer] == '-f' and len(sys.argv) >= pointer:
-                create_threads(tcount)
+                threads = create_threads(tcount)
                 with open(sys.argv[pointer + 1], "r") as fd:
                     for line in fd:
                         line = line.strip()
