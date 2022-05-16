@@ -18,8 +18,6 @@ KMPDownloader.py -f <.txt> : Bulk downloads all links in .txt file, must be last
 
 KMPDownloader.py -d <path> : Sets download path for a single download instance, must use /
   
-KMPDownloader.py -d <path> -f <.txt> : Combines above 2 switches
-
   KMPDownloader.py -v : Enables unzipping of files automatically
   
   KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
