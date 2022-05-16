@@ -9,12 +9,14 @@ import queue
 import time
 import sys
 import cfscrape
+from zipfile import ZipFile
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 
 - Returned chunked download to save memory and progress indicator
+- Fixed bug where certain downloads crashed threads when they do not have Content-Length header
 @author Jeff Chen
 @version 0.3.1
 @last modified 5/14/2022
@@ -22,6 +24,7 @@ Using multithreading
 
 # Settings ###################################################
 folder = r"D:/User Files/Personal/Cloud Drive/MEGAsync/Nonsensitive/Best/Package/Pixiv/~unsorted/"
+UNZIP = True     # True to automatically unzip files or not, unzipped files may have corrupted filenames
 CHUNK_SIZE = 1024 * 1024 * 64 # Higher chunk size gives speed bonus at high memory cost
 TIME_BETWEEN_CHUNKS = 2  # Time between Internet activities
 THREADS = 6                # Number of threads, note that download size is bottleneck by numerous factors
@@ -75,9 +78,30 @@ class downThread(threading.Thread):
          todo = download_queue.get()
          download_file(todo[0], todo[1], self.__name)
          download_queue.task_done()
+
+         # Unzip file if specified
+         if UNZIP and 'zip' in todo[0]:
+            unzip(todo[1], todo[1].rsplit('/', 1)[0])
          time.sleep(TIME_BETWEEN_CHUNKS)
    
 
+def unzip(zippath:str, destpath:str)->None:
+   """
+   Extracts a zip file to a destination. Does nothing if file
+   is password protected.
+
+   Param:
+      unzip: full path to zip file included zip file itself
+      destpath: full path to destination
+   """
+   print("Unzipping: " + zippath)
+   try:
+      with ZipFile(zippath, 'r') as zip:
+         zip.extractall(destpath)
+      os.remove(zippath)
+      print(zippath + " deleted")
+   except RuntimeError:
+      print(zippath + " is password protected")
 
 def trim_fname(fname:str) -> str:
    """
@@ -105,7 +129,6 @@ def download_file(src:str, fname:str, tname:str) -> None:
       fname: what to name the file to download
       tname: thread name
    """
-
    try:
       scraper = cfscrape.create_scraper()
 
@@ -117,20 +140,14 @@ def download_file(src:str, fname:str, tname:str) -> None:
       print(tname + " downloading " + src, flush=True)
       data = scraper.get(src, stream=True)
 
-      # Loop until download size matches real size
-      print(tname + ": Downloaded -> Real: " + fullsize + " Actual: " + data.headers.get('Content-Length'), flush=True)
-      while(data.headers.get('Content-Length') != fullsize):
-         print("Restarting download", flush=True)
-         data = scraper.get(src)
-
       # Download the file
       downloaded = 0
       with open(fname, 'wb') as fd:
          for chunk in data.iter_content(chunk_size=CHUNK_SIZE):
             downloaded += len(chunk)
             fd.write(chunk)
-            fd.flush()
-            print(tname + ": Downloaded " + str(downloaded) + " / " + fullsize + " (" + str(int((downloaded/int(fullsize) * 100))) + "%)", flush=True)  
+            if fullsize:
+               print(tname + ": Downloaded " + str(downloaded) + " / " + fullsize + " (" + str(int((downloaded/int(fullsize) * 100))) + "%)", flush=True)  
       print(tname + " download complete", flush=True)
       scraper.close()
 
