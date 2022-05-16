@@ -1,6 +1,5 @@
 from multiprocessing import Semaphore
 import threading
-from urllib.error import HTTPError, URLError
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -22,7 +21,7 @@ Using multithreading
 - Skip duplicate files based on file size
 - Removed time between download chunks due to pdf requests chunks being limited to <8KBs in some instances
 @author Jeff Chen
-@version 0.3.2
+@version 0.3.3
 @last modified 5/16/2022
 """
 
@@ -142,47 +141,44 @@ def download_file(src: str, fname: str, tname: str) -> None:
        fname: what to name the file to download
        tname: thread name
     """
-    try:
-        scraper = cfscrape.create_scraper()
+    
+    scraper = cfscrape.create_scraper()
 
-        # Get download size
-        r = scraper.request('HEAD', src)
-        fullsize = r.headers.get('Content-Length')
-        downloaded = 0
-        f = fname.split('/')[len(fname.split('/')) - 1]
-        # Download file, skip duplicate files
-        if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
-            done = False
-            while(not done):
-                try:
-                    # Download file to memory
-                    data = scraper.get(src, stream=True, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
+    # Get download size
+    r = scraper.request('HEAD', src)
+    fullsize = r.headers.get('Content-Length')
+    downloaded = 0
+    f = fname.split('/')[len(fname.split('/')) - 1]
+    # Download file, skip duplicate files
+    if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
+        done = False
+        while(not done):
+            try:
+                # Download file to memory
+                data = scraper.get(src, stream=True, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
 
-                    # Download the file
-                    with open(fname, 'wb') as fd, tqdm(
-                            desc=fname,
-                            total=int(fullsize),
-                            unit='iB',
-                            unit_scale=True,
-                            leave=False,
-                            bar_format= tname + "->" + f + '[{bar}{r_bar}]',
-                            unit_divisor=1024,) as bar:
-                        for chunk in data.iter_content(chunk_size=chunksz):
-                            sz = fd.write(chunk)
-                            fd.flush()
-                            bar.update(sz)
-                            downloaded += sz
-                        bar.clear()
+                # Download the file
+                with open(fname, 'wb') as fd, tqdm(
+                        desc=fname,
+                        total=int(fullsize),
+                        unit='iB',
+                        unit_scale=True,
+                        leave=False,
+                        bar_format= tname + "->" + f + '[{bar}{r_bar}]',
+                        unit_divisor=1024,) as bar:
+                    for chunk in data.iter_content(chunk_size=chunksz):
+                        sz = fd.write(chunk)
+                        fd.flush()
+                        bar.update(sz)
+                        downloaded += sz
+                    bar.clear()
 
-                    if(os.stat(fname).st_size == int(fullsize)):
-                        done = True
-                except requests.exceptions.ChunkedEncodingError:
-                    logging.warning(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
-                    pass
-                scraper.close()
-
-    except (URLError, HTTPError) as e:
-        logging.critical(tname + ": Download could not be completed for " + src)
+                if(os.stat(fname).st_size == int(fullsize)):
+                    done = True
+            except requests.exceptions.ChunkedEncodingError:
+                logging.warning(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
+                pass
+            scraper.close()
 
 
 def download_all_files(imgLinks: ResultSet, dir: str) -> None:
@@ -405,7 +401,7 @@ def main() -> None:
         pointer = 1
         while(len(sys.argv) > pointer):
             if sys.argv[pointer] == '-f' and len(sys.argv) >= pointer:
-                threads = create_threads(threads)
+                create_threads(tcount)
                 with open(sys.argv[pointer + 1], "r") as fd:
                     for line in fd:
                         line = line.strip()
