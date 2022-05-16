@@ -3,6 +3,9 @@ Simple Kemono.party downloader
 Ran and built in Windows 10 with Visual Studios on Python 3.10
 Functionality not guaranteed until 1.0, There are known bugs!
 
+![image](https://user-images.githubusercontent.com/78765964/168513727-077608e6-0299-418f-87e0-843db32d698c.png)
+
+
 ## Instructions:
 - Download all required dependencies
 - Edit Settings near the top of KMPDownloader.py. folder is the only required setting
