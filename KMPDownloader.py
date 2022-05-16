@@ -1,7 +1,6 @@
 from multiprocessing import Semaphore
 import threading
 from urllib.error import HTTPError, URLError
-from numpy import full
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -10,19 +9,21 @@ import queue
 import time
 import sys
 import cfscrape
-from zipfile import BadZipFile, ZipFile
+from zipfile import ZipFile
 from tqdm import tqdm
+import logging
+from zipfile import BadZipFile
+
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 
-- Vastly improve graphical aspect and progress bar
-- Fixed bug where unzips on non-zip file can occur
-- Added many more command line switches
-- Fixed incomplete download issues
+- Added more robust fix to file not being downloaded fully bug
+- Skip duplicate files based on file size
+- Removed time between download chunks due to pdf requests chunks being limited to <8KBs in some instances
 @author Jeff Chen
 @version 0.3.2
-@last modified 5/15/2022
+@last modified 5/16/2022
 """
 
 # Settings ###################################################
@@ -61,7 +62,7 @@ class downThread(threading.Thread):
     """
     __name: str
 
-    def __init__(self, id: int):
+    def __init__(self, id: int) -> None:
         """
         Initializes thread with a thread name
         Param: 
@@ -90,7 +91,7 @@ class downThread(threading.Thread):
 
             # Unzip file if specified
             if unzip and 'zip' in todo[0]:
-               extract_zip(todo[1], todo[1].rsplit('/', 1)[0])
+                extract_zip(todo[1], todo[1].rsplit('/', 1)[0])
             time.sleep(TIME_BETWEEN_CHUNKS)
 
 
@@ -107,8 +108,12 @@ def extract_zip(zippath: str, destpath: str) -> None:
         with ZipFile(zippath, 'r') as zip:
             zip.extractall(destpath)
         os.remove(zippath)
-    except RuntimeError or BadZipFile:
-       pass
+    except BadZipFile as e:
+        logging.critical("Unzipping a non zip file has occured, please check if file has been downloaded properly")
+        logging.critical("File name: " + zippath)
+        logging.critical("File size: " +  str(os.stat(zippath).st_size))
+        logging.critical(e)
+
 
 def trim_fname(fname: str) -> str:
     """
@@ -144,33 +149,40 @@ def download_file(src: str, fname: str, tname: str) -> None:
         r = scraper.request('HEAD', src)
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
-        
-        
-        while(downloaded < int(fullsize)):
-         # Download file to memory
-         data = scraper.get(src, stream=True)
+        f = fname.split('/')[len(fname.split('/')) - 1]
+        # Download file, skip duplicate files
+        if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
+            done = False
+            while(not done):
+                try:
+                    # Download file to memory
+                    data = scraper.get(src, stream=True, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
 
-         # Download the file
-         with open(fname, 'wb') as fd, tqdm(
-                  desc=fname,
-                  total=int(fullsize),
-                  unit='iB',
-                  unit_scale=True,
-                  leave=False,
-                  bar_format=tname + ' ' + '[{bar}{r_bar}]',
-                  unit_divisor=1024,) as bar:
-               for chunk in data.iter_content(chunk_size=chunksz):
-                  sz = fd.write(chunk)
-                  bar.update(sz)
-                  time.sleep(TIME_BETWEEN_CHUNKS)
-                  downloaded += sz
-               bar.clear()
+                    # Download the file
+                    with open(fname, 'wb') as fd, tqdm(
+                            desc=fname,
+                            total=int(fullsize),
+                            unit='iB',
+                            unit_scale=True,
+                            leave=False,
+                            bar_format= tname + "->" + f + '[{bar}{r_bar}]',
+                            unit_divisor=1024,) as bar:
+                        for chunk in data.iter_content(chunk_size=chunksz):
+                            sz = fd.write(chunk)
+                            fd.flush()
+                            bar.update(sz)
+                            downloaded += sz
+                        bar.clear()
 
-         scraper.close()
+                    if(os.stat(fname).st_size == int(fullsize)):
+                        done = True
+                except requests.exceptions.ChunkedEncodingError:
+                    logging.warning(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
+                    pass
+                scraper.close()
 
     except (URLError, HTTPError) as e:
-        print(tname + ": Download could not be completed for " + src, flush=True)
-        exit()
+        logging.critical(tname + ": Download could not be completed for " + src)
 
 
 def download_all_files(imgLinks: ResultSet, dir: str) -> None:
@@ -208,8 +220,8 @@ def process_container(url: str, root: str) -> None:
     reqs = requests.get(url)
     soup = BeautifulSoup(reqs.text, 'html.parser')
     while "500 Internal Server Error" in soup.find("title"):
-        print("500 Server error encountered at " +
-              url + ", retrying...", flush=True)
+        logging.error("500 Server error encountered at " +
+              url + ", retrying...")
         time.sleep(TIME_BETWEEN_CHUNKS)
         reqs = requests.get(url)
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -307,7 +319,7 @@ def call_and_interpret_url(url: str) -> None:
         # Build directory
         reqs = requests.get(url)
         if(reqs.status_code >= 400):
-            print("Status code " + str(reqs.status_code), flush=True)
+            logging.error("Status code " + str(reqs.status_code))
         soup = BeautifulSoup(reqs.text, 'html.parser')
         artist = soup.find("a", attrs={'class': 'post__user-name'})
         titleDir = folder + \
@@ -356,7 +368,7 @@ def kill_threads(threads: list) -> None:
         i.join()
 
     kill = False
-    print(str(len(threads)) + " threads have been terminated", flush=True)
+    logging.info(str(len(threads)) + " threads have been terminated")
 
 
 def routine(url: str) -> None:
@@ -387,7 +399,7 @@ def main() -> None:
     global unzip
     global tcount
     global chunksz
-
+    logging.basicConfig(level=logging.INFO)
     threads = None
     if len(sys.argv) > 1:
         pointer = 1
@@ -403,35 +415,32 @@ def main() -> None:
             elif sys.argv[pointer] == '-v':
                 unzip = True
                 pointer += 1
-                print("UNZIP -> " +  str(unzip), flush=True)
+                logging.info("UNZIP -> " + str(unzip))
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
                 folder = sys.argv[pointer + 1]
                 pointer += 2
-                print("FOLDER -> " +  folder, flush=True)
+                logging.info("FOLDER -> " + folder)
             elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
-                print("THREAD_COUNT -> " +  str(tcount), flush=True)
+                logging.info("THREAD_COUNT -> " + str(tcount))
             elif sys.argv[pointer] == '-c' and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
-                print("CHUNKSZ -> " +  str(chunksz), flush=True)
+                logging.info("CHUNKSZ -> " + str(chunksz))
             else:
-                print("Switches: Can be combined but -f ,must be at the end if used")
-                print("No switch : Prompts user with download url")
-                print("-f <textfile.txt> : Download from text file containing links")
-                print("-d <path> : Set download path for single instance, must use '/'")
-                print("-v : Enables unzipping of files automatically")
-                print("-c <#> : Adjust download chunk size in bytes (Default is 64M)")
-                print("-h : Help")
-                print("-t <#> : Change download thread count (default is 6)")
+                logging.info("Switches: Can be combined but -f ,must be at the end if used")
+                logging.info("No switch : Prompts user with download url")
+                logging.info("-f <textfile.txt> : Download from text file containing links")
+                logging.info("-d <path> : Set download path for single instance, must use '/'")
+                logging.info("-v : Enables unzipping of files automatically")
+                logging.info("-c <#> : Adjust download chunk size in bytes (Default is 64M)")
+                logging.info("-h : Help")
+                logging.info("-t <#> : Change download thread count (default is 6)")
                 exit()
 
-        if not threads:
-            threads = create_threads(tcount)
-            routine(None)
 
-    else:
+    if not threads:
         threads = create_threads(tcount)
         routine(None)
 
