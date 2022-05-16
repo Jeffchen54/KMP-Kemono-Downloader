@@ -9,7 +9,7 @@ Functionality not guaranteed until 1.0, There are known bugs!
 ## Instructions:
 - Download all required dependencies
 - Edit Settings near the top of KMPDownloader.py. folder is the only required setting
-- Run in your favoriate command line software
+- Run in your favorite command line software
 - Enter in a url of an artist home page (Follows this format: https://kemono.party/fanbox/user/xxxxxxxx)
 - Enjoy!
 
@@ -65,6 +65,11 @@ None
  ##  Resolved bugs:
 - DDOS preventing downloads (Does not throw an exception)
 - Large files timing out before downloaded fully (Does not throw an exception)
+ 
+ ## Changelog 0.3.3
+  - Added a more robust fix to file not being downloaded fully bug
+  - Skip duplicate file based on file name and size
+  - Removed time between download chunks due to pdf requests chunks being limited to <8KBs in some instances
   
  ## Changelog 0.3.2
 - Vastly improve graphical aspect and progress bar
