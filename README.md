@@ -2,6 +2,7 @@
 Simple Kemono.party downloader
 Ran and built in Windows 10 with Visual Studios on Python 3.10
 Functionality not guaranteed until 1.0, There are known bugs!
+Can download everything from Files, save text and links in Content, and everything in Downloads. Can be set to automatically unzip files if they contain no password.
 
 ![Screenshot 2022-05-17 114434 PNG](https://user-images.githubusercontent.com/78765964/168853513-b5b14b98-430f-4437-b63b-08ea93ddf014.jpg)
 
@@ -114,4 +115,5 @@ None
 - User friendly upgrades
 - GUI
 - Command line argument support for more settings
-- Automatic Gdrive and Mega download from links <unlikely>
+- Automatic Gdrive and Mega download from links (Unlikely)
+- Save Comments
