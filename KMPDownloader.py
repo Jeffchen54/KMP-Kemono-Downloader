@@ -12,16 +12,19 @@ from zipfile import ZipFile
 from tqdm import tqdm
 import logging
 from zipfile import BadZipFile
+from HashTable import HashTable
+from HashTable import KVPair
+
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 
-- Added more robust fix to file not being downloaded fully bug
-- Skip duplicate files based on file size
-- Removed time between download chunks due to pdf requests chunks being limited to <8KBs in some instances
+- Various bug fixes
+- Fix issue where multiple posts exists, causing infinite download loop
+- Improved dialouge
 @author Jeff Chen
-@version 0.3.3
+@version 0.3.4
 @last modified 5/16/2022
 """
 
@@ -43,6 +46,7 @@ containerPrefix = "https://kemono.party"
 kill = False                     # Thread kill switch
 download_queue = queue.Queue(-1)  # Download task queue
 downloadables = Semaphore(0)     # Avalible downloadable resource device
+register = HashTable(10)           # Registers a directory, combats multiple posts using the same name
 
 
 class Error(Exception):
@@ -91,7 +95,6 @@ class downThread(threading.Thread):
             # Unzip file if specified
             if unzip and 'zip' in todo[0]:
                 extract_zip(todo[1], todo[1].rsplit('/', 1)[0])
-            time.sleep(TIME_BETWEEN_CHUNKS)
 
 
 def extract_zip(zippath: str, destpath: str) -> None:
@@ -107,12 +110,10 @@ def extract_zip(zippath: str, destpath: str) -> None:
         with ZipFile(zippath, 'r') as zip:
             zip.extractall(destpath)
         os.remove(zippath)
-    except BadZipFile as e:
-        logging.critical("Unzipping a non zip file has occured, please check if file has been downloaded properly")
-        logging.critical("File name: " + zippath)
-        logging.critical("File size: " +  str(os.stat(zippath).st_size))
-        logging.critical(e)
-
+    except BadZipFile:
+        logging.critical("Unzipping a non zip file has occured, please check if file has been downloaded properly" +"\n + ""File name: " + zippath + "\n" +"File size: " +  str(os.stat(zippath).st_size))
+    except RuntimeError:
+        logging.debug("File name: " + zippath + "\n" + "File size: " +  str(os.stat(zippath).st_size))
 
 def trim_fname(fname: str) -> str:
     """
@@ -141,11 +142,15 @@ def download_file(src: str, fname: str, tname: str) -> None:
        fname: what to name the file to download
        tname: thread name
     """
-    
+    logging.debug(tname + " downloading " + fname + " from " + src)
     scraper = cfscrape.create_scraper()
-
-    # Get download size
-    r = scraper.request('HEAD', src)
+    r = None
+    while not r:
+        try:
+            # Get download size
+            r = scraper.request('HEAD', src)
+        except(requests.exceptions.ConnectTimeout):
+            logging.debug("Connection request unanswered, retrying")
     fullsize = r.headers.get('Content-Length')
     downloaded = 0
     f = fname.split('/')[len(fname.split('/')) - 1]
@@ -164,20 +169,20 @@ def download_file(src: str, fname: str, tname: str) -> None:
                         unit='iB',
                         unit_scale=True,
                         leave=False,
-                        bar_format= tname + "->" + f + '[{bar}{r_bar}]',
-                        unit_divisor=1024,) as bar:
+                        bar_format= tname + " (" + str(download_queue.qsize()) + ")->" + f + '[{bar}{r_bar}]',
+                        unit_divisor=int(1024)) as bar:
                     for chunk in data.iter_content(chunk_size=chunksz):
                         sz = fd.write(chunk)
                         fd.flush()
                         bar.update(sz)
                         downloaded += sz
+                    time.sleep(TIME_BETWEEN_CHUNKS)
                     bar.clear()
 
                 if(os.stat(fname).st_size == int(fullsize)):
                     done = True
             except requests.exceptions.ChunkedEncodingError:
-                logging.warning(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
-                pass
+                logging.debug(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
             scraper.close()
 
 
@@ -225,9 +230,17 @@ def process_container(url: str, root: str) -> None:
     titleDir = root + \
         (re.sub(r'[^\w\-_\. ]', '_', soup.find("title").text.strip())
          ).split("/")[0] + "/"
+    # Check if directory has been registered
+    value = register.hashtable_lookup_value(titleDir)
+    if value != None:  # If register, update titleDir and increment value
+        register.hashtable_edit_value(titleDir, value + 1)
+        titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")/"
+    else:   # If not registered, add to register at value 1
+        register.hashtable_add(KVPair[str,int](titleDir, 1))
+    
+    # Add to directory
     if not os.path.isdir(titleDir):
         os.makedirs(titleDir)
-
     reqs.close()
     # Download image links
     download_all_files(imgLinks, titleDir)
@@ -237,7 +250,7 @@ def process_container(url: str, root: str) -> None:
 
     if content:
         if(os.path.exists(titleDir + "post__content.txt")):
-            pass
+            logging.debug("Skipping duplicate post_content download")
         else:
             with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
                 fd.write(content.text)
@@ -396,6 +409,7 @@ def main() -> None:
     global tcount
     global chunksz
     logging.basicConfig(level=logging.INFO)
+    # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     threads = None
     if len(sys.argv) > 1:
         pointer = 1
