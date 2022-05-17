@@ -63,7 +63,10 @@ These bugs were accounted for but not enough testing has been conducted
   
 None
   
- 
+ ## Changelog 0.3.5
+  - Some edits made to be compatible with Windows
+  - Program configured to be runnable using command line arguments only
+  
  ## Changelog 0.3.4
   - Various bug fixes
   - Fix issue where multiple posts exists sharing the same name, causing infinite download loop
