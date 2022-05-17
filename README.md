@@ -3,8 +3,7 @@ Simple Kemono.party downloader
 Ran and built in Windows 10 with Visual Studios on Python 3.10
 Functionality not guaranteed until 1.0, There are known bugs!
 
-![image](https://user-images.githubusercontent.com/78765964/168513727-077608e6-0299-418f-87e0-843db32d698c.png)
-
+![Screenshot 2022-05-17 114434 PNG](https://user-images.githubusercontent.com/78765964/168853513-b5b14b98-430f-4437-b63b-08ea93ddf014.jpg)
 
 ## Instructions:
 - Download all required dependencies
@@ -60,12 +59,15 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 
 ## Possible bugs:
 These bugs were accounted for but not enough testing has been conducted
+  
 None
   
- ##  Resolved bugs:
-- DDOS preventing downloads (Does not throw an exception)
-- Large files timing out before downloaded fully (Does not throw an exception)
  
+ ## Changelog 0.3.4
+  - Various bug fixes
+  - Fix issue where multiple posts exists, causing infinite download loop
+  - Improved dialouge
+  
  ## Changelog 0.3.3
   - Added a more robust fix to file not being downloaded fully bug
   - Skip duplicate file based on file name and size
