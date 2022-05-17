@@ -1,5 +1,6 @@
 from multiprocessing import Semaphore
 import threading
+from threading import Lock
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -20,16 +21,15 @@ from HashTable import KVPair
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 
-- Various bug fixes
-- Fix issue where multiple posts exists, causing infinite download loop
-- Improved dialouge
+- Now outputs total # of downloaded files
+- Slightly boost url scraping speed
 @author Jeff Chen
 @version 0.3.4
 @last modified 5/16/2022
 """
 
 # Settings ###################################################
-folder = r"D:/User Files/Personal/Cloud Drive/MEGAsync/Nonsensitive/Best/Package/Pixiv/~unsorted/"
+folder = None
 unzip = False     # True to automatically unzip files or not, unzipped files may have corrupted filenames
 # Higher chunk size gives speed bonus at high memory cost
 chunksz = 1024 * 1024 * 64
@@ -47,6 +47,9 @@ kill = False                     # Thread kill switch
 download_queue = queue.Queue(-1)  # Download task queue
 downloadables = Semaphore(0)     # Avalible downloadable resource device
 register = HashTable(10)           # Registers a directory, combats multiple posts using the same name
+fcount = 0
+fcount_mutex = Lock()
+
 
 
 class Error(Exception):
@@ -179,6 +182,10 @@ def download_file(src: str, fname: str, tname: str) -> None:
                     time.sleep(TIME_BETWEEN_CHUNKS)
                     bar.clear()
 
+                fcount_mutex.acquire()
+                global fcount
+                fcount += 1
+                fcount_mutex.release()
                 if(os.stat(fname).st_size == int(fullsize)):
                     done = True
             except requests.exceptions.ChunkedEncodingError:
@@ -298,7 +305,7 @@ def process_window(url: str, continuous: bool) -> None:
 
         if continuous:
             # Move to next window
-            time.sleep(TIME_BETWEEN_CHUNKS)
+            #time.sleep(TIME_BETWEEN_CHUNKS)
             counter += 25
             reqs = requests.get(url + suffix + str(counter))
             soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -399,6 +406,15 @@ def routine(url: str) -> None:
     # Interpret the url
     call_and_interpret_url(url)
 
+def help()->None:
+    logging.info("Switches: Can be combined but -f ,must be at the end if used")
+    logging.info("No switch : Prompts user with download url")
+    logging.info("-f <textfile.txt> : Download from text file containing links")
+    logging.info("-d <path> : REQUIRED - Set download path for single instance, must use '/'")
+    logging.info("-v : Enables unzipping of files automatically")
+    logging.info("-c <#> : Adjust download chunk size in bytes (Default is 64M)")
+    logging.info("-h : Help")
+    logging.info("-t <#> : Change download thread count (default is 6)")
 
 def main() -> None:
     """
@@ -411,17 +427,22 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     threads = None
+    done = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
             if sys.argv[pointer] == '-f' and len(sys.argv) >= pointer:
-                threads = create_threads(tcount)
-                with open(sys.argv[pointer + 1], "r") as fd:
-                    for line in fd:
-                        line = line.strip()
-                        if len(line) > 0:
-                            routine(line)
-                pointer += 2
+                if not folder:
+                    logging.error("No folder specified, please use -d to set download path")
+                else:
+                    done = True
+                    threads = create_threads(tcount)
+                    with open(sys.argv[pointer + 1], "r") as fd:
+                        for line in fd:
+                            line = line.strip()
+                            if len(line) > 0:
+                                routine(line)
+                pointer = len(sys.argv)
             elif sys.argv[pointer] == '-v':
                 unzip = True
                 pointer += 1
@@ -439,24 +460,21 @@ def main() -> None:
                 pointer += 2
                 logging.info("CHUNKSZ -> " + str(chunksz))
             else:
-                logging.info("Switches: Can be combined but -f ,must be at the end if used")
-                logging.info("No switch : Prompts user with download url")
-                logging.info("-f <textfile.txt> : Download from text file containing links")
-                logging.info("-d <path> : Set download path for single instance, must use '/'")
-                logging.info("-v : Enables unzipping of files automatically")
-                logging.info("-c <#> : Adjust download chunk size in bytes (Default is 64M)")
-                logging.info("-h : Help")
-                logging.info("-t <#> : Change download thread count (default is 6)")
-                exit()
-
-
-    if not threads:
+                pointer = len(sys.argv)
+            
+    if not done and folder:
         threads = create_threads(tcount)
         routine(None)
 
-    download_queue.join()
-    kill_threads(threads)
+    if threads:
+        download_queue.join()
+        kill_threads(threads)
 
+        fcount_mutex.acquire()
+        print("Files downloaded: " + str(fcount))
+        fcount_mutex.release()
+    else:
+        help()
 
 if __name__ == "__main__":
     main()
