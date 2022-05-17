@@ -65,7 +65,7 @@ None
  
  ## Changelog 0.3.4
   - Various bug fixes
-  - Fix issue where multiple posts exists, causing infinite download loop
+  - Fix issue where multiple posts exists sharing the same name, causing infinite download loop
   - Improved dialouge
   
  ## Changelog 0.3.3
