@@ -66,6 +66,8 @@ None
  ## Changelog 0.3.5
   - Some edits made to be compatible with Windows
   - Program configured to be runnable using command line arguments only
+  - Now outputs total downloaded files
+  - Slight boost to url scraping speed
   
  ## Changelog 0.3.4
   - Various bug fixes
