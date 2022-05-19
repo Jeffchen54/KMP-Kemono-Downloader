@@ -20,26 +20,22 @@ from datetime import timedelta
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- 
+- Post comments now downloaded
+- Reports program running time
 @author Jeff Chen
 @version 0.4
-@last modified 5/17/2022
+@last modified 5/19/2022
 """
 
-# Settings #################################################### True to automatically unzip files or not, unzipped files may have corrupted filenames
-TIME_BETWEEN_CHUNKS = 2  # Time between Internet activities
-
-containerPrefix = "https://kemono.party"
 # DO NOT EDIT ################################################
-# Download task queue, Contains tuples in the structure: (func(),(args1,args2,...))
-download_queue = queue.Queue(-1)
+containerPrefix = "https://kemono.party"
+download_queue = queue.Queue(-1) # Download task queue, Contains tuples in the structure: (func(),(args1,args2,...))
 downloadables = Semaphore(0)     # Avalible downloadable resource device
-# Registers a directory, combats multiple posts using the same name
-register = HashTable(10)
-fcount = 0
-fcount_mutex = Lock()
-tname = threading.local()
-kill = False
+register = HashTable(10)    # Registers a directory, combats multiple posts using the same name
+fcount = 0  # Number of downloaded files
+fcount_mutex = Lock()   # Mutex for fcount 
+tname = threading.local()   # TLV for thread name
+kill = False    # Kill switch for downThreads
 
 
 class Error(Exception):
@@ -141,6 +137,7 @@ class KMP:
         logging.debug("Downloading " + fname + " from " + src)
         scraper = cfscrape.create_scraper()
         r = None
+        global fcount
         while not r:
             try:
                 # Get download size
@@ -149,7 +146,7 @@ class KMP:
                 logging.debug("Connection request unanswered, retrying")
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
-        f = fname.split('/')[len(fname.split('/')) - 1]
+        f = fname.rpartition('/')[2]
         # Download file, skip duplicate files
         if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize):
             done = False
@@ -168,17 +165,16 @@ class KMP:
                             bar_format=tname.name +
                         " (" + str(download_queue.qsize()) + ")->" +
                         f + '[{bar}{r_bar}]',
-                            unit_divisor=int(1024)) as bar:
+                            unit_divisor=int(self.__chunksz)) as bar:
                         for chunk in data.iter_content(chunk_size=self.__chunksz):
                             sz = fd.write(chunk)
                             fd.flush()
                             bar.update(sz)
                             downloaded += sz
-                        time.sleep(TIME_BETWEEN_CHUNKS)
+                        time.sleep(1)
                         bar.clear()
 
                         fcount_mutex.acquire()
-                        global fcount
                         fcount += 1
                         fcount_mutex.release()
                         if(os.stat(fname).st_size == int(fullsize)):
@@ -262,20 +258,21 @@ class KMP:
         url: url of the container
         root: directory to store the content
         """
-        # Get HTML request and parse the HTML for image links and title
+        # Get HTML request and parse the HTML for image links and title ############
         reqs = requests.get(url)
         soup = BeautifulSoup(reqs.text, 'html.parser')
         while "500 Internal Server Error" in soup.find("title"):
             logging.error("500 Server error encountered at " +
                           url + ", retrying...")
-            time.sleep(TIME_BETWEEN_CHUNKS)
+            time.sleep(2)
             reqs = requests.get(url)
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", class_="fileThumb")
         titleDir = root + \
             (re.sub(r'[^\w\-_\. ]', '_', soup.find("title").text.strip())
              ).split("/")[0] + "/"
-        # Check if directory has been registered
+
+        # Check if directory has been registered ###################################
         value = register.hashtable_lookup_value(titleDir)
         if value != None:  # If register, update titleDir and increment value
             register.hashtable_edit_value(titleDir, value + 1)
@@ -283,14 +280,15 @@ class KMP:
         else:   # If not registered, add to register at value 1
             register.hashtable_add(KVPair[str, int](titleDir, 1))
 
-        # Add to directory
+        # Create directory if not registered
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
         reqs.close()
-        # Download image links
+
+        # Download all 'files' #####################################################
         self.__download_all_files(imgLinks, titleDir)
 
-        # Get post content
+        # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")
 
         if content:
@@ -298,27 +296,36 @@ class KMP:
                 logging.debug("Skipping duplicate post_content download")
             else:
                 with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
-                    fd.write(content.text)
+                    fd.write(content.getText(separator='\n', strip=True))
                     links = content.find_all("a")
                     for link in links:
                         url = link.get('href')
                         fd.write("\n" + url)
 
-        # Download post attachments
+        # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
             for attachment in attachments:
                 download = attachment.get('href')
-                # download_queue.put((containerPrefix + download,
-                #               titleDir + self.__trim_fname(download)))
                 src = containerPrefix + download
                 fname = titleDir + self.__trim_fname(download)
                 download_queue.put((self.__download_file, (src, fname)))
                 downloadables.release()
 
+        # Download post comments ################################################
+        if(os.path.exists(titleDir + "post__content.txt")):
+                logging.debug("Skipping duplicate post comments")
+        else:
+            comments = soup.find("div", class_="post__comments")
+            text = comments.getText(separator='\n', strip=True)
+            if(text != "No comments found for this post."):
+                with open(titleDir + "post__comments.txt", "w", encoding="utf-8") as fd:
+                    fd.write(comments.getText(separator='\n', strip=True))
+
     def __process_window(self, url: str, continuous: bool) -> None:
         """
         Processes a single main artist window
+
         Param: 
             url: url of the main artist window
             continuous: True to attempt to visit next pages of content, False to not 
@@ -347,7 +354,6 @@ class KMP:
 
             if continuous:
                 # Move to next window
-                # time.sleep(TIME_BETWEEN_CHUNKS)
                 counter += 25
                 reqs = requests.get(url + suffix + str(counter))
                 soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -397,10 +403,11 @@ class KMP:
 
     def __create_threads(self, count: int) -> list:
         """
-        Creates count number of downThreads
+        Creates count number of downThreads and starts it
 
         Param:
-        count: how many threads to create
+            count: how many threads to create
+        Return: Threads
         """
         threads = []
         # Spawn threads
@@ -411,7 +418,9 @@ class KMP:
 
     def __kill_threads(self, threads: list) -> None:
         """
-        Kills all threads in threads
+        Kills all threads in threads. Threads are restarted and killed using a
+        switch, deadlocked or infinitely running threads cannot be killed using
+        this function.
 
         Param:
         threads: threads to kill
@@ -466,6 +475,9 @@ class KMP:
 
 
 def help() -> None:
+    """
+    Displays help information on invocating this program
+    """
     logging.info(
         "Switches: Can be combined in any order!")
     logging.info("No switch : Prompts user with download url")
