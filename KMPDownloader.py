@@ -13,6 +13,7 @@ from zipfile import ZipFile
 from tqdm import tqdm
 import logging
 from zipfile import BadZipFile
+
 from HashTable import HashTable
 from HashTable import KVPair
 from datetime import timedelta
@@ -179,9 +180,9 @@ class KMP:
                         fcount_mutex.release()
                         if(os.stat(fname).st_size == int(fullsize)):
                             done = True
-                except requests.exceptions.ChunkedEncodingError:
+                except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug(
-                        "Chunked encoding error has occured, server has likely disconnected, download has restarted")
+                        "Chunked encoding error or connection error has occured, server has likely disconnected, download has restarted")
                 scraper.close()
 
         # Unzip file if specified
