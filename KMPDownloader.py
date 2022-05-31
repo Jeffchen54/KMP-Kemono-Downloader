@@ -454,11 +454,10 @@ class KMP:
         # Get url to download ######################
         # List type url
         if isinstance(url, list):
-            with open(url, "r") as fd:
-                for line in fd:
-                    line = line.strip()
-                    if len(line) > 0:
-                        self.__call_and_interpret_url(line)
+            for line in url:
+                line = line.strip()
+                if len(line) > 0:
+                    self.__call_and_interpret_url(line)
 
         else:
             while not url or "https://kemono.party" not in url:
@@ -509,7 +508,8 @@ def main() -> None:
         pointer = 1
         while(len(sys.argv) > pointer):
             if sys.argv[pointer] == '-f' and len(sys.argv) >= pointer:
-                urls = sys.argv[pointer + 1], "r"
+                with open(sys.argv[pointer + 1], "r") as fd:
+                    urls = fd.readlines()
                 pointer += 2
             elif sys.argv[pointer] == '-v':
                 unzip = True
