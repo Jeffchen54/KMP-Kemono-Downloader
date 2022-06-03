@@ -152,7 +152,7 @@ def download_file(src: str, fname: str, tname: str) -> None:
         try:
             # Get download size
             r = scraper.request('HEAD', src)
-        except(requests.exceptions.ConnectTimeout):
+        except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
             logging.debug("Connection request unanswered, retrying")
     fullsize = r.headers.get('Content-Length')
     downloaded = 0
@@ -188,7 +188,7 @@ def download_file(src: str, fname: str, tname: str) -> None:
                 fcount_mutex.release()
                 if(os.stat(fname).st_size == int(fullsize)):
                     done = True
-            except requests.exceptions.ChunkedEncodingError:
+            except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                 logging.debug(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
             scraper.close()
 
