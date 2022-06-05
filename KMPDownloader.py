@@ -1,3 +1,4 @@
+from http.client import HTTPException
 from multiprocessing import Semaphore
 import threading
 from threading import Lock
@@ -5,7 +6,6 @@ import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
 import re
-import queue
 import time
 import sys
 import cfscrape
@@ -17,12 +17,20 @@ from zipfile import BadZipFile
 from HashTable import HashTable
 from HashTable import KVPair
 from datetime import timedelta
+from Threadpool import ThreadPool
+import dirs
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Post comments now downloaded
 - Reports program running time
+- Pre emptive server disconnect fixed
+- Fixed issue where non zip file was unzipped
+- Downloads, now is the name shown in Kemono itself, not the scrambled mess
+- TODO unzip 7z file
+- TODO remove gumroad comment not available
+- TODO BUG post content empty creates empty post content file at times.
 @author Jeff Chen
 @version 0.4
 @last modified 5/19/2022
@@ -30,8 +38,6 @@ Using multithreading
 
 # DO NOT EDIT ################################################
 containerPrefix = "https://kemono.party"
-download_queue = queue.Queue(-1) # Download task queue, Contains tuples in the structure: (func(),(args1,args2,...))
-downloadables = Semaphore(0)     # Avalible downloadable resource device
 register = HashTable(10)    # Registers a directory, combats multiple posts using the same name
 fcount = 0  # Number of downloaded files
 fcount_mutex = Lock()   # Mutex for fcount 
@@ -53,41 +59,9 @@ class UnspecifiedDownloadPathException(Error):
     """Raised when download path is not given"""
     pass
 
-
-class downThread(threading.Thread):
-    """
-    Fully generic threadpool where tasks of any kind is stored and retrieved in task_queue,
-    threads are daemon threads and can be killed using kill variable. 
-    """
-    __id: int
-
-    def __init__(self, id: int) -> None:
-        """
-        Initializes thread with a thread name
-        Param: 
-        id: thread identifier
-        """
-        self.__id = id
-        super(downThread, self).__init__(daemon=True)
-
-    def run(self) -> None:
-        """
-        Worker thread job. Blocks until a task is avalable via downloadables
-        and retreives the task from download_queue
-        """
-        tname.name = "Thread #" + str(self.__id)
-        while True:
-            # Wait until download is available
-            downloadables.acquire()
-
-            # Check kill signal
-            if kill:
-                return
-
-            # Pop queue and download it
-            todo = download_queue.get()
-            todo[0](*todo[1])
-            download_queue.task_done()
+class DeadThreadPoolException(Error):
+    """Raised when download threads are nonexistant or dead"""
+    pass
 
 
 class KMP:
@@ -98,6 +72,7 @@ class KMP:
     __unzip: bool
     __tcount: int
     __chunksz: int
+    __threads:ThreadPool
 
     def __init__(self, folder: str, unzip: bool, tcount: int | None, chunksz: int | None) -> None:
         """
@@ -130,31 +105,30 @@ class KMP:
     def __download_file(self, src: str, fname: str) -> None:
         """
         Downloads file at src. Skips duplicate files
-
         Param:
-        src: src of image to download
-        fname: what to name the file to download
+            src: src of image to download
+            fname: what to name the file to download
+            tname: thread name
         """
         logging.debug("Downloading " + fname + " from " + src)
         scraper = cfscrape.create_scraper()
         r = None
-        global fcount
         while not r:
             try:
                 # Get download size
                 r = scraper.request('HEAD', src)
-            except(requests.exceptions.ConnectTimeout):
+            except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                 logging.debug("Connection request unanswered, retrying")
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
-        f = fname.rpartition('/')[2]
+        f = fname.split('/')[len(fname.split('/')) - 1]
         # Download file, skip duplicate files
-        if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize):
+        if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
             done = False
             while(not done):
                 try:
                     # Download file to memory
-                    data = scraper.get(src, stream=True)
+                    data = scraper.get(src, stream=True, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
 
                     # Download the file
                     with open(fname, 'wb') as fd, tqdm(
@@ -163,10 +137,8 @@ class KMP:
                             unit='iB',
                             unit_scale=True,
                             leave=False,
-                            bar_format=tname.name +
-                        " (" + str(download_queue.qsize()) + ")->" +
-                        f + '[{bar}{r_bar}]',
-                            unit_divisor=int(self.__chunksz)) as bar:
+                            bar_format= "(" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
+                            unit_divisor=int(1024)) as bar:
                         for chunk in data.iter_content(chunk_size=self.__chunksz):
                             sz = fd.write(chunk)
                             fd.flush()
@@ -175,19 +147,19 @@ class KMP:
                         time.sleep(1)
                         bar.clear()
 
-                        fcount_mutex.acquire()
-                        fcount += 1
-                        fcount_mutex.release()
-                        if(os.stat(fname).st_size == int(fullsize)):
-                            done = True
+                    fcount_mutex.acquire()
+                    global fcount
+                    fcount += 1
+                    fcount_mutex.release()
+                    if(os.stat(fname).st_size == int(fullsize)):
+                        done = True
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
-                    logging.debug(
-                        "Chunked encoding error or connection error has occured, server has likely disconnected, download has restarted")
+                    logging.debug(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 scraper.close()
 
-        # Unzip file if specified
-        if self.__unzip and 'zip' in fname:
-            self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
+            # Unzip file if specified
+            if self.__unzip and 'zip' in fname.rpartition('/')[2]:
+                self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
 
     def __extract_zip(self, zippath: str, destpath: str) -> None:
         """
@@ -214,7 +186,7 @@ class KMP:
         Trims fname, returns result. Extensions are kept:
         For example
         "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt?f=File.txt"
-        -> 2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt 
+        -> File.txt
 
         Param: 
         fname: file name
@@ -222,9 +194,10 @@ class KMP:
         Return: trimmed filename with extension
         """
 
-        first = fname.split("?")[0].split("?")
-        second = first[0].split("/")
-        return second[len(second) - 1]
+        #first = fname.split("?")[0].split("?")
+        #second = first[0].split("/")
+        #return second[len(second) - 1]
+        return fname.rpartition('=')[2]
 
     def __download_all_files(self, imgLinks: ResultSet, dir: str) -> None:
         """
@@ -233,17 +206,21 @@ class KMP:
         Param:
         imgLinks: all image links within a container
         dir: where to save the images
+        
+        Raise: DeadThreadPoolException when no download threads are available
         """
+        if not self.__threads.get_status():
+            raise DeadThreadPoolException
+
         counter = 0
         for link in imgLinks:
             download = link.get('href')
             extension = (self.__trim_fname(download).split('.'))
-            # download_queue.put((containerPrefix + download, dir +
-            #                str(counter) + "." + extension[len(extension) - 1]))
+
             src = containerPrefix + download
             fname = dir + str(counter) + "." + extension[len(extension) - 1]
-            download_queue.put((self.__download_file, (src, fname)))
-            downloadables.release()
+            self.__threads.enqueue((self.__download_file, (src, fname)))
+
             counter += 1
 
     def __process_container(self, url: str, root: str) -> None:
@@ -258,7 +235,12 @@ class KMP:
         Param:
         url: url of the container
         root: directory to store the content
+        
+        Raise: DeadThreadPoolException when no download threads are available
         """
+        if not self.__threads.get_status():
+            raise DeadThreadPoolException
+
         # Get HTML request and parse the HTML for image links and title ############
         reqs = requests.get(url)
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -310,18 +292,19 @@ class KMP:
                 download = attachment.get('href')
                 src = containerPrefix + download
                 fname = titleDir + self.__trim_fname(download)
-                download_queue.put((self.__download_file, (src, fname)))
-                downloadables.release()
+                self.__threads.enqueue((self.__download_file, (src, fname)))
+
 
         # Download post comments ################################################
         if(os.path.exists(titleDir + "post__content.txt")):
                 logging.debug("Skipping duplicate post comments")
         else:
             comments = soup.find("div", class_="post__comments")
-            text = comments.getText(separator='\n', strip=True)
-            if(text != "No comments found for this post."):
-                with open(titleDir + "post__comments.txt", "w", encoding="utf-8") as fd:
-                    fd.write(comments.getText(separator='\n', strip=True))
+            if comments and len(comments.getText(strip=True)) > 0:
+                text = comments.getText(separator='\n', strip=True)
+                if(text and text != "No comments found for this post."):
+                    with open(titleDir + "post__comments.txt", "w", encoding="utf-8") as fd:
+                        fd.write(comments.getText(separator='\n', strip=True))
 
     def __process_window(self, url: str, continuous: bool) -> None:
         """
@@ -394,15 +377,13 @@ class KMP:
             reqs.close()
 
             # Process container
-            #download_queue.put((self.__process_container, (url, titleDir)))
             self.__process_container(url, titleDir)
         elif 'user' in url:
-            #download_queue.put((self.__process_window, (url, True)))
             self.__process_window(url, True)
         else:
             raise UnknownURLTypeException
 
-    def __create_threads(self, count: int) -> list:
+    def __create_threads(self, count: int) -> ThreadPool:
         """
         Creates count number of downThreads and starts it
 
@@ -410,14 +391,11 @@ class KMP:
             count: how many threads to create
         Return: Threads
         """
-        threads = []
-        # Spawn threads
-        for i in range(0, count):
-            threads.append(downThread(i))
-            threads[i].start()
+        threads = ThreadPool(count)
+        threads.start_threads()
         return threads
 
-    def __kill_threads(self, threads: list) -> None:
+    def __kill_threads(self, threads: ThreadPool) -> None:
         """
         Kills all threads in threads. Threads are restarted and killed using a
         switch, deadlocked or infinitely running threads cannot be killed using
@@ -426,17 +404,9 @@ class KMP:
         Param:
         threads: threads to kill
         """
-        global kill
-        kill = True
 
-        for i in range(0, len(threads)):
-            downloadables.release()
-
-        for i in threads:
-            i.join()
-
-        kill = False
-        logging.info(str(len(threads)) + " threads have been terminated")
+        threads.join_queue()
+        threads.kill_threads()
 
     def routine(self, url: str | list[str] | None) -> None:
         """
@@ -449,7 +419,7 @@ class KMP:
         """
 
         # Generate threads #########################
-        threads = self.__create_threads(self.__tcount)
+        self.__threads = self.__create_threads(self.__tcount)
 
         # Get url to download ######################
         # List type url
@@ -464,13 +434,12 @@ class KMP:
                 url = input("Input a url, or type 'quit' to exit> ")
 
                 if(url == 'quit'):
-                    self.__kill_threads(threads)
+                    self.__kill_threads(self.__threads)
                     return
 
             self.__call_and_interpret_url(url)
         # Close threads ###########################
-        download_queue.join()
-        self.__kill_threads(threads)
+        self.__kill_threads(self.__threads)
         logging.info("Files downloaded: " + str(fcount))
 
 
@@ -496,6 +465,7 @@ def main() -> None:
     """
     Program runner
     """
+    #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
     logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
@@ -516,7 +486,7 @@ def main() -> None:
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
-                folder = sys.argv[pointer + 1]
+                folder = dirs.convert_win_to_py_path(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("FOLDER -> " + folder)
             elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:
