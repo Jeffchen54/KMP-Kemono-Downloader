@@ -8,9 +8,9 @@ Can download everything from Files, save text and links in Content, and everythi
 
 ## Instructions:
 - Download all required dependencies
-- Edit Settings near the top of KMPDownloader.py. folder is the only required setting
+- Install 7z or your favorite unzip software and add it to your Window's Path. Line should be in the format "C:\Users\chenj\Downloads\7-Zip"
 - Run in your favorite command line software
-- Enter in a url of an artist home page (Follows this format: https://kemono.party/fanbox/user/xxxxxxxx)
+- Read the command line arguments for instructions on how to run.
 - Enjoy!
 
 ## Command line arguments:
@@ -18,11 +18,11 @@ KMPDownloader.py -f <.txt> : Bulk downloads all links in .txt file, must be last
 
 KMPDownloader.py -d <path> : Sets download path for a single download instance, must use /
   
-  KMPDownloader.py -v : Enables unzipping of files automatically
+KMPDownloader.py -v : Enables unzipping of files automatically
   
-  KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
+KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
   
-  KMPDownloader.py -t <#> : Change download thread count (default is 6)
+KMPDownloader.py -t <#> : Change download thread count (default is 6)
  
 KMPDownloader.py -h : Help
   
@@ -62,6 +62,18 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 These bugs were accounted for but not enough testing has been conducted
   
 None
+  
+ ## Changelog 0.3.6
+  - Post comments are now downloadable
+  - Reports program running time
+  - Pre emptive server disconnect is fixed 
+  - Fixed issue where non zip files was unzipped.
+  - Downloads the filename displayed on Kemono itself for attachments instead of the scrambled text
+  - Fixed issue where certain file types were downloaded as .bin instead of the correct extension
+  - Expanded automatic unzipping to .zip, .7z, and .rar.
+  - Replaced illegal file characters with "" instead of "_"
+  - Japanese and other unusual file names now show proper names instead of corrupted characters
+  - Fixed issue where post content was generated when no text is present
   
  ## Changelog 0.3.5
   - Some edits made to be compatible with Windows
