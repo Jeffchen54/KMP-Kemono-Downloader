@@ -186,6 +186,7 @@ class ThreadPool():
 
         Return: True if alive, false if not
         """
+        return self.__alive
     class TaskThread(threading.Thread):
         """
         Fully generic threadpool where tasks of any kind is stored and retrieved in task_queue,

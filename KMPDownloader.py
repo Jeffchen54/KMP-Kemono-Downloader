@@ -1,5 +1,3 @@
-from http.client import HTTPException
-from multiprocessing import Semaphore
 import threading
 from threading import Lock
 import requests
@@ -9,10 +7,10 @@ import re
 import time
 import sys
 import cfscrape
-from zipfile import ZipFile
 from tqdm import tqdm
 import logging
-from zipfile import BadZipFile
+import patoolib
+from patoolib import util
 
 from HashTable import HashTable
 from HashTable import KVPair
@@ -27,10 +25,12 @@ Using multithreading
 - Reports program running time
 - Pre emptive server disconnect fixed
 - Fixed issue where non zip file was unzipped
-- Downloads, now is the name shown in Kemono itself, not the scrambled mess
-- TODO unzip 7z file
+- Downloads the name shown in Kemono itself, not the scrambled mess
+- Supports automatic unzipping of .zip, .7z, and .rar 
+- Replace illegal file characters with "" instead of "_"
+- Japanese and other unusual file names now show proper names instead of corrupted characters
 - TODO remove gumroad comment not available
-- TODO BUG post content empty creates empty post content file at times.
+- Fixed bug where empty post comment was generated when no text is present
 @author Jeff Chen
 @version 0.4
 @last modified 5/19/2022
@@ -153,14 +153,27 @@ class KMP:
                     fcount_mutex.release()
                     if(os.stat(fname).st_size == int(fullsize)):
                         done = True
+                        logging.debug("Downloaded Size (" + fname + ") -> " + fullsize)
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 scraper.close()
 
             # Unzip file if specified
-            if self.__unzip and 'zip' in fname.rpartition('/')[2]:
+            if self.__unzip and self.__supported_zip_type(fname):
                 self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
 
+    def __supported_zip_type(self, fname:str) -> bool:
+        """
+        Checks if a file is a zip file (7z, zip, rar)
+
+        Param:
+            fname: zip file name or path
+        Return True if zip file, false if not
+        """
+        extension = fname.rpartition('/')[2]
+
+        return 'zip' in extension or 'rar' in extension or '7z' in extension
+        
     def __extract_zip(self, zippath: str, destpath: str) -> None:
         """
         Extracts a zip file to a destination. Does nothing if file
@@ -171,10 +184,11 @@ class KMP:
         destpath: full path to destination
         """
         try:
-            with ZipFile(zippath, 'r') as zip:
-                zip.extractall(destpath)
+            print(zippath)
+            print(destpath)
+            patoolib.extract_archive(zippath, outdir=destpath)
             os.remove(zippath)
-        except BadZipFile:
+        except util.PatoolError:
             logging.critical("Unzipping a non zip file has occured, please check if file has been downloaded properly" +
                              "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
         except RuntimeError:
@@ -197,7 +211,7 @@ class KMP:
         #first = fname.split("?")[0].split("?")
         #second = first[0].split("/")
         #return second[len(second) - 1]
-        return fname.rpartition('=')[2]
+        return fname.rpartition(' ')[2]
 
     def __download_all_files(self, imgLinks: ResultSet, dir: str) -> None:
         """
@@ -214,11 +228,11 @@ class KMP:
 
         counter = 0
         for link in imgLinks:
-            download = link.get('href')
-            extension = (self.__trim_fname(download).split('.'))
+            src = containerPrefix + link.get('href')
 
-            src = containerPrefix + download
-            fname = dir + str(counter) + "." + extension[len(extension) - 1]
+
+            fname = dir + str(counter) + '.' + src.rpartition('.')[2]
+
             self.__threads.enqueue((self.__download_file, (src, fname)))
 
             counter += 1
@@ -251,9 +265,9 @@ class KMP:
             reqs = requests.get(url)
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", class_="fileThumb")
-        titleDir = root + \
-            (re.sub(r'[^\w\-_\. ]', '_', soup.find("title").text.strip())
-             ).split("/")[0] + "/"
+        titleDir = os.path.join(root, \
+            (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
+             ).split("/")[0] + "/")
 
         # Check if directory has been registered ###################################
         value = register.hashtable_lookup_value(titleDir)
@@ -291,14 +305,15 @@ class KMP:
             for attachment in attachments:
                 download = attachment.get('href')
                 src = containerPrefix + download
-                fname = titleDir + self.__trim_fname(download)
+                fname = os.path.join(titleDir, self.__trim_fname(attachment.text.strip()))
+
                 self.__threads.enqueue((self.__download_file, (src, fname)))
 
 
         # Download post comments ################################################
         if(os.path.exists(titleDir + "post__content.txt")):
                 logging.debug("Skipping duplicate post comments")
-        else:
+        elif "gumroad" not in url:
             comments = soup.find("div", class_="post__comments")
             if comments and len(comments.getText(strip=True)) > 0:
                 text = comments.getText(separator='\n', strip=True)
@@ -319,7 +334,7 @@ class KMP:
         reqs.close()
         # Create directory
         artist = soup.find("meta", attrs={'name': 'artist_name'})
-        titleDir = self.__folder + re.sub(r'[^\w\-_\. ]', '_',
+        titleDir = self.__folder + re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           artist.get('content')) + "/"
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
@@ -361,7 +376,6 @@ class KMP:
         UnknownURLTypeException when url type cannot be determined
         """
         if '?' in url:
-            #download_queue.put((self.__process_window, (url, False)))
             self.__process_window(url, False)
         elif "post" in url:
             # Build directory
@@ -371,7 +385,7 @@ class KMP:
             soup = BeautifulSoup(reqs.text, 'html.parser')
             artist = soup.find("a", attrs={'class': 'post__user-name'})
             titleDir = self.__folder + \
-                re.sub(r'[^\w\-_\. ]', '_', artist.text.strip()) + "/"
+                re.sub(r'[^\w\-_\. ]|[\.]$', '', artist.text.strip()) + "/"
             if not os.path.isdir(titleDir):
                 os.makedirs(titleDir)
             reqs.close()
@@ -404,7 +418,6 @@ class KMP:
         Param:
         threads: threads to kill
         """
-
         threads.join_queue()
         threads.kill_threads()
 
@@ -421,6 +434,7 @@ class KMP:
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
 
+
         # Get url to download ######################
         # List type url
         if isinstance(url, list):
@@ -429,6 +443,7 @@ class KMP:
                 if len(line) > 0:
                     self.__call_and_interpret_url(line)
 
+        # User input url
         else:
             while not url or "https://kemono.party" not in url:
                 url = input("Input a url, or type 'quit' to exit> ")
@@ -486,7 +501,7 @@ def main() -> None:
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
-                folder = dirs.convert_win_to_py_path(sys.argv[pointer + 1])
+                folder = dirs.convert_win_to_py_path(dirs.replace_dots_to_py_path(sys.argv[pointer + 1]))
                 pointer += 2
                 logging.info("FOLDER -> " + folder)
             elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:

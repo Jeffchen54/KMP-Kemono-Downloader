@@ -5,6 +5,7 @@ import dirs
 import os
 import shutil
 from KMPDownloader import DeadThreadPoolException
+import logging
 """
 Tests KMPDownloader.py, tests utilize safe works only
 
@@ -14,7 +15,7 @@ Last modified: 6/5/2022
 
 
 # Constants
-TESTING_PATH = dirs.replace_dots_to_py_path("./")
+TESTING_PATH = dirs.replace_dots_to_py_path("./temp/")
 
 class KMPTestCase(unittest.TestCase):
 
@@ -22,6 +23,7 @@ class KMPTestCase(unittest.TestCase):
         """
         Sets up an Null KMP since tests require different paramaters
         """
+        logging.basicConfig(level=logging.DEBUG)
         self.KMP = None
     
     @classmethod
@@ -38,91 +40,167 @@ class KMPTestCase(unittest.TestCase):
 
     def test_start_kill_threads(self) -> None:
         """
-        Tests the starting and killing of threadss
+        Tests the starting and killing of threads
         """
-        self.KMP.__KMP__folder = TESTING_PATH
+        self.KMP = KMP(TESTING_PATH, False, tcount=None, chunksz=None)
 
         # Single thread
-        self.KMP.__KMP.__threads = self.KMP.__KMP.__create_threads(1)
-        self.KMP.__KMP.__kill_threads(self.KMP.__KMP.__threads)
-        self.assertRaises(DeadThreadPoolException, self.KMP.__KMP.__call_and_interpret_url("https://kemono.party/gumroad/user/9222612694494/post/AizNy"))
+        self.KMP._KMP__threads = self.KMP._KMP__create_threads(1)
+        self.KMP._KMP__kill_threads(self.KMP._KMP__threads)
+        self.assertRaises(DeadThreadPoolException, self.KMP._KMP__call_and_interpret_url, "https://kemono.party/gumroad/user/9222612694494/post/AizNy")
 
         # 3 Threads
-        self.KMP.__KMP.__threads = self.KMP.__KMP.__create_threads(3)
-        self.KMP.__KMP.__kill_threads(self.KMP.__KMP.__threads)
-        self.assertRaises(DeadThreadPoolException, self.KMP.__KMP.__call_and_interpret_url("https://kemono.party/gumroad/user/9222612694494/post/AizNy"))
+        self.KMP._KMP__threads = self.KMP._KMP__create_threads(3)
+        self.KMP._KMP__kill_threads(self.KMP._KMP__threads)
+        self.assertRaises(DeadThreadPoolException, self.KMP._KMP__call_and_interpret_url, "https://kemono.party/gumroad/user/9222612694494/post/AizNy")
 
-    def test_trim_fname() -> None:
+    def test_trim_fname(self) -> None:
         """
         Tests __trim_fname
         """
-        # Matching extensions
-        # href="/data/5d/72/5d72201f60ad8927300dd5de1324fe3100a0876c67a394df71db242ba2b8e27a.zip?f=%5B19.01%5D%20KDA%202%20%26%20Bea%20Gui%20%26%20Lt%20a%20%5BGumroad%5D.zip"
-
-        # Mismatched extension
-        # href = "/data/0f/a8/0fa896658a877e98812f24da58b19fdf0b2db1220587639f614cafcce34b59f8.bin?f=kre_l.mp4
+        self.KMP = KMP(TESTING_PATH, False, tcount=None, chunksz=None)
+        # <a class="post__attachment-link" href="/data/ac/95/ac95d0d22d3bf2b76e66305ba8b45e573d08980419f7aca786e11945f53342c4.zip?f=%E3%81%BE%E3%81%A8%E3%82%81DL%E7%94%A8.zip">
+        #    Download まとめDL用.zip
+        #  </a>
+        self.assertEqual(self.KMP._KMP__trim_fname("Download まとめDL用.zip"), "まとめDL用.zip")
+      
     def test_download_static_files(self) -> None:
         """
         Tests downloading files under different circumstances
         """
-        # https://kemono.party/patreon/user/33271853?o=0
-        # Single Thread, single image
+        
+        # Single thread no image
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/33271853/post/36694748")
 
-        # 3 Threads, single image
+
+        # 3 Thread no image
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=3, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/33271853/post/47946953")
+
+        # Single Thread, 2 image
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/33271853/post/36001529")
+
+        # 3 Threads, 2 image
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=3, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/33271853/post/47255266")
 
         # 1 Thread, multi images
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/33271853/post/65647736")
 
-        # 3 cores multi images
+        # 16 Thread multi images
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=16, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/33271853/post/52792630")
 
+        # Verify content:
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/0.png").st_size, 3692609)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/1.png").st_size, 3692609)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/2.png").st_size, 2752125)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/3.png").st_size, 3262789)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/4.png").st_size, 2392221)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/5.png").st_size, 2349839)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/6.png").st_size, 5652120)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/7.png").st_size, 1825005)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/8.png").st_size, 3002485)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/NAPP 3.0 PREVIEW by delcieno from Patreon  Kemono/9.png").st_size, 4467542)
+
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/0.png").st_size, 13444381)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/1.png").st_size, 13444381)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/2.png").st_size, 13854733)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/3.png").st_size, 13702259)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/4.png").st_size, 13802523)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/5.png").st_size, 13040955)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/6.png").st_size, 13911132)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/7.png").st_size, 13524999)
+        self.assertEqual(os.stat(TESTING_PATH + "delcieno/ARMORS and NAPP status by delcieno from Patreon  Kemono/8.png").st_size, 12743876)
+
+    def test_download_static_attachments(self) -> None:
+        """
+        Tests downloading static attachments
+        """
         # Single .pdf
-        # https://kemono.party/gumroad/user/5563321775917/post/wSIJ
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/gumroad/user/5563321775917/post/wSIJ")
+        
 
         # Single .cvf
-        # https://kemono.party/gumroad/user/5563321775917/post/mRSH
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/gumroad/user/5563321775917/post/mRSH")
 
-    def test_download_animated_files(self) -> None:
+        self.assertEqual(os.stat(TESTING_PATH + "Gumroad Help Center/New Creator FAQ - All the Basics in One Place by Gumroad Help Center from Gumroad  Kemono/Creatorpedia.pdf").st_size, 14704)
+        self.assertEqual(os.stat(TESTING_PATH + "Gumroad Help Center/An Example CSV of Exported Sales Data by Gumroad Help Center from Gumroad  Kemono/Sales_CSV_Example.csv").st_size, 2933)
+    
+    
+    def test_download_animated_attachments(self) -> None:
         """
         Tests downloaded animated gif files
         """
         # 2 Threads, 2 gifs
-        # https://kemono.party/patreon/user/523894/post/66527944
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=2, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/523894/post/66527944")
+
 
         # Single .mp4 
-        # https://kemono.party/gumroad/user/5563321775917/post/jnBuO
+        self.KMP.routine("https://kemono.party/gumroad/user/5563321775917/post/jnBuO")
 
         # .mov 
-        # https://kemono.party/gumroad/user/8844596389936/post/WBlK
+        self.KMP.routine("https://kemono.party/gumroad/user/8844596389936/post/WBlK")
 
-    def test_download_audio_files(self) -> None:
+        self.assertEqual(os.stat(TESTING_PATH + "Jasonafex/New Playable Build 0.6.6 by Jasonafex from Patreon  Kemono/1.gif").st_size, 1930242)
+        self.assertEqual(os.stat(TESTING_PATH + "Jasonafex/New Playable Build 0.6.6 by Jasonafex from Patreon  Kemono/0.gif").st_size, 1930242)
+        self.assertEqual(os.stat(TESTING_PATH + "Gumroad Help Center/Creating a Product - A Streaming Video Experience by Gumroad Help Center from Gumroad  Kemono/Product_Creation_-_Export_1015.mp4").st_size, 58934883)
+        self.assertEqual(os.stat(TESTING_PATH + "Katon Callaway/Topology Tips  by Katon Callaway from Gumroad  Kemono/topoJoints.mov").st_size, 448251813)
+
+        
+    def test_download_audio_attachments(self) -> None:
         """
         Tests downloading audio files
         """
         # 3 mp3
-        # https://kemono.party/gumroad/user/5563321775917/post/moNG
+        self.KMP = KMP(TESTING_PATH, unzip=False, tcount=3, chunksz=None)
+        self.KMP.routine("https://kemono.party/gumroad/user/5563321775917/post/moNG")
 
         # .sf2, .wav
-        # https://kemono.party/gumroad/user/3915675902935/post/NTJQZ
+        self.KMP.routine("https://kemono.party/gumroad/user/3915675902935/post/NTJQZ")
 
-    def test_download_zip_files(self) -> None:
+        self.assertEqual(os.stat(TESTING_PATH + "Truebones Motions Animation Studios/FREE STAR TREK SOUND FX INCLUDES SOUND FONT and .WAV file formats. by Truebones Motions Animation Studios from Gumroad  Kemono/HS_StarTrekFX.sf2").st_size, 807090)
+        self.assertEqual(os.stat(TESTING_PATH + "Truebones Motions Animation Studios/FREE STAR TREK SOUND FX INCLUDES SOUND FONT and .WAV file formats. by Truebones Motions Animation Studios from Gumroad  Kemono/sf2_smpl.wav").st_size, 806998)
+        self.assertEqual(os.stat(TESTING_PATH + "Gumroad Help Center/A Music Album - Jam time by Gumroad Help Center from Gumroad  Kemono/BONUS_TRACK_Cant_Tail_Me_Nothing.mp3").st_size, 6541049)
+        self.assertEqual(os.stat(TESTING_PATH + "Gumroad Help Center/A Music Album - Jam time by Gumroad Help Center from Gumroad  Kemono/Tribute_to_1776.mp3").st_size, 6244398)
+        self.assertEqual(os.stat(TESTING_PATH + "Gumroad Help Center/A Music Album - Jam time by Gumroad Help Center from Gumroad  Kemono/Why_Am_I_Michael_Bluth.mp3").st_size, 1746643)
+
+    def test_download_zip_attachments(self) -> None:
         """
         Tests downloading of a zip file and unzipping of zip files
         """
         # Single zip file
-        # https://kemono.party/gumroad/user/samplescience/post/YeLB
+        self.KMP = KMP(TESTING_PATH, unzip=True, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/gumroad/user/samplescience/post/YeLB")
 
+        size = 0 
+        for dirpath, dirnames, filenames in os.walk(TESTING_PATH + "/SampleScience Plugins  Samples/SampleScience TR-626 HD by SampleScience Plugins  Samples. from Gumroad  Kemono/SampleScience_TR626_HD"):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                # skip if it is symbolic link
+                if not os.path.islink(fp):
+                    size += os.path.getsize(fp)
 
-        # 
+        self.assertEqual(size, 4509259)
     
-    def test_download_alternate_zip_files(self) -> None:
+    def test_download_alternate_zip_attachments(self) -> None:
         """
         Tests downloading of alternate zip files (7z...) and unzipping
         """
-        # Single 7z file & .zxp
 
-        # Single .rar file 
-        # https://kemono.party/gumroad/user/6075196025658/post/lWrr
+        self.KMP = KMP(TESTING_PATH, unzip=True, tcount=1, chunksz=None)
+        # Single 7z file & .zxp
     
-    def test_uncommon_download_types(self) -> None:
+        # Single .rar file 
+        self.KMP.routine("https://kemono.party/gumroad/user/6075196025658/post/lWrr")
+    
+    def test_uncommon_download_attachments(self) -> None:
         """
         Tests uncommon download formats in Download segment
         """
