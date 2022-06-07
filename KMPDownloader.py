@@ -195,7 +195,6 @@ class KMP:
         # A tempdir is used to bypass Window's 255 char limit when unzipping files
         with tempfile.TemporaryDirectory(prefix="temp") as dirpath:
             try:
-                print(destpath)
                 patoolib.extract_archive(zippath, outdir=dirpath + '/', verbosity=-1, interactive=False)
 
                 for f in os.listdir(dirpath):
