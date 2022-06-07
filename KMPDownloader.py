@@ -23,19 +23,10 @@ from Threadpool import ThreadPool
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Post comments now downloaded
-- Reports program running time
-- Pre emptive server disconnect fixed
-- Fixed issue where non zip file was unzipped
-- Downloads the name shown in Kemono itself, not the scrambled mess of characters
-- Fixed issues where certain file types were downloaded as .bin instead of the correct extension
-- Supports automatic unzipping of .zip, .7z, and .rar 
-- Replace illegal file characters with "" instead of "_"
-- Japanese and other unusual file names now show proper names instead of corrupted characters
-- Fixed bug where empty post content was generated when no text is present
-- Supports Linux style file paths containing '.' and '..'
+- Images in Content section downloaded
+
 @author Jeff Chen
-@version 0.4
+@version 0.4.1
 @last modified 6/7/2022
 """
 
@@ -241,9 +232,12 @@ class KMP:
 
         counter = 0
         for link in imgLinks:
-            src = containerPrefix + link.get('href')
-
-
+            # Type 1 image - Image in Files section
+            if link.get('href'):
+                src = containerPrefix + link.get('href')
+            # Type 2 image - Image in Content section
+            else:
+                src = containerPrefix + link.get('src')
             fname = dir + str(counter) + '.' + src.rpartition('.')[2]
 
             self.__threads.enqueue((self.__download_file, (src, fname)))
@@ -306,12 +300,16 @@ class KMP:
             if(os.path.exists(titleDir + "post__content.txt")):
                 logging.debug("Skipping duplicate post_content download")
             else:
+                # Text section
                 with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
                     fd.write(content.getText(separator='\n', strip=True))
                     links = content.find_all("a")
                     for link in links:
                         url = link.get('href')
                         fd.write("\n" + url)
+                
+            # Image Section
+            self.__download_all_files(content.find_all('img'), titleDir)
 
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
