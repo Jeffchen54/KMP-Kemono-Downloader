@@ -24,7 +24,12 @@ from Threadpool import ThreadPool
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Images in Content section downloaded
-
+- Fixed extremely rare bug where human readable download file name is corrupted on server
+    so hashed file name will be scraped instead
+- Links and text in file segment now saved to file__text.txt
+- TODO Discord
+- TODO Improvement to post comments
+- TODO Improve fragmented download protocol
 @author Jeff Chen
 @version 0.4.1
 @last modified 6/7/2022
@@ -203,19 +208,41 @@ class KMP:
         """
         Trims fname, returns result. Extensions are kept:
         For example
+        
+        When extension length of ?... token is <= 10:
         "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt?f=File.txt"
         -> File.txt
+
+        Or
+
+        When extension length of ?... token is > 10:
+        "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.jpg?f=File.jpe%3Ftoken-time%3D1570752000..."
+        ->2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.jpg
+
+        Or
+
+        When ' ' exists
+        'Download まとめDL用.zip'
+        -> まとめDL用.zip
 
         Param: 
         fname: file name
         Pre: fname follows above convention
         Return: trimmed filename with extension
         """
+        # Case 3, space
+        case3 = fname.rpartition(' ')[2]
+        if case3 != fname:
+            return case3
 
-        #first = fname.split("?")[0].split("?")
-        #second = first[0].split("/")
-        #return second[len(second) - 1]
-        return fname.rpartition(' ')[2]
+        case1 = fname.rpartition('=')[2]
+        # Case 2, bad extension provided
+        if len(case1.rpartition('.')[2]) > 10:
+            first = fname.rpartition('?')[0]
+            return first.rpartition('/')[2]
+        
+        # Case 1, good extension
+        return case1
 
     def __download_all_files(self, imgLinks: ResultSet, dir: str) -> None:
         """
@@ -237,12 +264,54 @@ class KMP:
                 src = containerPrefix + link.get('href')
             # Type 2 image - Image in Content section
             else:
-                src = containerPrefix + link.get('src')
-            fname = dir + str(counter) + '.' + src.rpartition('.')[2]
+                target = link.get('src')
+                # Hosted on non KMP server
+                if 'http' in target:
+                    src = target
+                # Hosted on KMP server
+                else:
+                    src = containerPrefix + target
+            fname = dir + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
 
             self.__threads.enqueue((self.__download_file, (src, fname)))
 
             counter += 1
+
+    def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
+        """
+        Scrapes all text and their links in textLink and saves it to 
+        in dir
+
+        Param:
+            textLink: Set of links and their text in Files segment
+            dir: Where to save the text and links to. Must be a .txt file
+        """
+        frontOffset = 5
+        endOffset = 4
+        currOffset = 0
+        listSz = len(textLinks)
+        strBuilder = []
+        # No work to be done if the file already exists
+        if os.path.exists(dir) or listSz <= 9:
+            return
+        
+        # Record data
+        for txtlink in textLinks:
+            if frontOffset > 0:
+                frontOffset -= 1
+            elif(endOffset < listSz - currOffset):
+                strBuilder.append(txtlink.text.strip() + '\n')
+                strBuilder.append(txtlink.get('href') + '\n')
+                strBuilder.append("____________________________________________________________\n")
+            currOffset += 1
+        
+        # Write to file if data exists
+        if len(strBuilder) > 0:
+            with open(dir, 'w') as fd:
+                for line in strBuilder:
+                    fd.write(line)
+
+            
 
     def __process_container(self, url: str, root: str) -> None:
         """
@@ -277,6 +346,7 @@ class KMP:
             (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
              ).split("/")[0] + "/")
 
+
         # Check if directory has been registered ###################################
         value = register.hashtable_lookup_value(titleDir)
         if value != None:  # If register, update titleDir and increment value
@@ -291,7 +361,11 @@ class KMP:
         reqs.close()
 
         # Download all 'files' #####################################################
+        # Image type
         self.__download_all_files(imgLinks, titleDir)
+
+        # Link type
+        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + "file__text.txt")
 
         # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")

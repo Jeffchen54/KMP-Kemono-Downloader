@@ -1,5 +1,4 @@
 from re import T
-import shutil
 from tkinter import N
 import unittest
 from KMPDownloader import KMP
@@ -8,12 +7,14 @@ from KMPDownloader import DeadThreadPoolException
 import logging
 """
 Tests KMPDownloader.py, tests utilize safe works only
-All downloaded files are automatically wiped
+unless switched off
 
 Author: Jeff Chen
 Last modified: 6/6/2022
 """
-
+# On to allow NSFW or off to disable ####
+NSFW = True
+#########################################
 
 class KMPTestCase(unittest.TestCase):
 
@@ -30,9 +31,10 @@ class KMPTestCase(unittest.TestCase):
         Create temporary testing directory
         """
         cls.tempdir = os.path.abspath('./') + '/temp/'
-        print(cls.tempdir)
+
         if os.path.exists(cls.tempdir):
-            shutil.rmtree(cls.tempdir)
+            logging.critical("Please remove before testing ->" + cls.tempdir)
+            exit()
 
     def test_start_kill_threads(self) -> None:
         """
@@ -60,8 +62,21 @@ class KMPTestCase(unittest.TestCase):
         # <a class="post__attachment-link" href="/data/ac/95/ac95d0d22d3bf2b76e66305ba8b45e573d08980419f7aca786e11945f53342c4.zip?f=%E3%81%BE%E3%81%A8%E3%82%81DL%E7%94%A8.zip">
         #    Download まとめDL用.zip
         #  </a>
+
+        # Case 3 -> Space
         self.assertEqual(self.KMP._KMP__trim_fname(
             "Download まとめDL用.zip"), "まとめDL用.zip")
+
+        # Case 2 -> Bad extension
+        self.assertEqual(self.KMP._KMP__trim_fname(
+            "/data/3d/68/3d68def31822e95ad249ceb2237fcdae29b644e6702366ddae761572be900955.jpg?f=https%3A//c10.patreonusercontent.\
+com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.jpe%3Ftoken-time%3D1570752000%26token\
+-hash%3DLadY-wBiRPi84Qb5X-KI7NEgEP6HE6lljOLiHBm7qY8%253D"), "3d68def31822e95ad249ceb2237fcdae29b644e6702366ddae761572be900955.jpg")
+
+        # Case 1 -> Good extension
+        self.assertEqual(self.KMP._KMP__trim_fname(
+            "/data/4f/83/4f83453fc625095401da81248a2242246b01b229bc5e1b2e1dd470da866f1980.jpg?f=b9ffc2f9-2c11-42c8-b5a2-7995a233ca41\
+.jpg"), "b9ffc2f9-2c11-42c8-b5a2-7995a233ca41.jpg")
 
     def test_download_static_files(self) -> None:
         """
@@ -226,7 +241,7 @@ class KMPTestCase(unittest.TestCase):
 
         self.KMP = KMP(self.tempdir, unzip=True, tcount=1, chunksz=None)
         # Single 7z file
-        # TODO NEEDS A LINK!!!
+        # Has been tested in other tests
 
         # Single .rar file
         self.KMP.routine(
@@ -245,8 +260,35 @@ class KMPTestCase(unittest.TestCase):
     
     def test_download_empty_window(self) -> None:
         """
-        Tests downloading am artist with no works
+        Tests downloading an artist with no works
         """
+        # https://kemono.party/gumroad/user/gunwild
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=1, chunksz=None)
+        self.KMP.routine("https://kemono.party/patreon/user/8296916/post/59821763")
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "Gunwild")), 0)
+
+    def test_file_text(self) -> None:
+        """
+        Tests downloading an artist with a link in their files segment
+        """
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=1, chunksz=None)
+        
+        # DNE
+        self.KMP.routine("https://kemono.party/fanbox/user/305765/post/3885644")
+        self.assertFalse(os.path.exists(os.path.join(self.tempdir, "Y.P/NEXT by Y.P from Pixiv Fanbox  Kemono/file__text.txt")))
+
+        # Exists
+        self.KMP.routine("https://kemono.party/patreon/user/5489259/post/30194248")
+        with open(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/file__text.txt"), 'r') as fd:
+            self.assertEqual(fd.read(), "MissWarmJ on Twitter\n\
+              \n\
+\n\
+                  Hey,pls wear your earphone watch till the end! 1:38minuts~ It is the first NSFW #ASMR Preview. Would appriated Mega RT and Likes ^^ https://t.co/mwmfzS0cfb https://t.co/3n7bUYMzRD\n\
+https://twitter.com/misswarmj/status/1176210868121546752\n\
+\
+____________________________________________________________\n\
+")
+
 
     def test_download_bulk(self) -> None:
         """
@@ -375,9 +417,13 @@ when they make they software free ... even though for limited time I need to not
 do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/app/1096900/RPG_Maker_MZ/\
 \nhttps://store.steampowered.com/app/1096900/RPG_Maker_MZ/")
 
-        # Images
-        # <NOT SUPPORTED>
-    
+        # Images on KMP and on other website
+        # https://kemono.party/patreon/user/8296916/post/52732723
+        self.KMP.routine("https://kemono.party/patreon/user/8296916/post/52732723")
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "dreamsavior/Error File list not found in init file by dreamsavior from Patreon  Kemono/0.jpg")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "dreamsavior/Error File list not found in init file by dreamsavior from Patreon  Kemono/1.png")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "dreamsavior/Error File list not found in init file by dreamsavior from Patreon  Kemono/2.png")))
+
     def test_post_comments(self) -> None:
         """
         Tests downloading post comment
@@ -402,6 +448,16 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         # Not empty
         self.KMP.routine("https://kemono.party/fanbox/user/237083/post/3011863")
         self.assertTrue(os.path.exists(os.path.join(self.tempdir, "Blood Rouge/WIP唾吐きクソビッチと化した金城遙華 by Blood Rouge from Pixiv Fanbox  Kemono/post__comments.txt")))       
+
+    def test_broken_url(self):
+        """
+        Tests downloading of a file with bad file extension 
+        """
+        if NSFW:
+            self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None)
+            self.KMP.routine("https://kemono.party/patreon/user/5489259/post/30194248")
+            self.assertTrue(os.path.exists(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/0.jpg")))
+            self.assertTrue(os.path.exists(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/1.jpg")))
 
     def getDirSz(self, dir: str) -> int:
         """
