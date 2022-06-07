@@ -4,13 +4,42 @@ Ran and built in Windows 10 with Visual Studios on Python 3.10
 Functionality not guaranteed until 1.0, There are known bugs!
 Can download everything from Files, save text and links in Content, and everything in Downloads. Can be set to automatically unzip files if they contain no password.
 
+*For version 0.4 and onward, downloaded files names will be different. Files from 0.3.5 and prior will be considered different files
+and will not be skipped on duplication checks.
+
 ![Screenshot 2022-05-17 114434 PNG](https://user-images.githubusercontent.com/78765964/168853513-b5b14b98-430f-4437-b63b-08ea93ddf014.jpg)
+
+## Current Features
+View changelog for more details on features not included here.
+- All services supported except Discord (Patreon, Pixiv Fanbox, Gumroad, SubscribeStar, DLSite, Fantia).
+- Can download a single artist work, all artist works, or a single page of artist works.
+- Download all files and any downloads in high resolution and correct extension.
+- Automatic file unzipping for .7z, .zip, and .rar files. 
+- Extraction of a work's content and comments*.
+- Multhreading support.
+
+*Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
 
 ## Instructions:
 - Download all required dependencies
-- Edit Settings near the top of KMPDownloader.py. folder is the only required setting
+
+    pip install requests
+    
+    pip install bs4
+    
+    pip install cfscrape 
+    
+    pip install tqdm
+    
+    pip install patoolib
+- Install 7z and add it to your Window's Path. Line should be in the format "C:\Users\chenj\Downloads\7-Zip"
+- Copy and paste the files in patch for patoolib into your patoolib library. You can also grab the patched files from https://github.com/wummel/patool/pull/83/commits/c5282e30e1b3448081d74a0b8a86c7c9ecaaebbf. On my computer, the directory
+is "C:\Users\chenj\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\patoolib\programs".
+The directory to paste the files will contain files with the same name as what has been provided in the patch folder. This patches the issue where
+the program will hang when prompted with a password. You do not need to follow this step if you are not going to set automatic
+file unzipping or are not going to unzip password protected zip files.
 - Run in your favorite command line software
-- Enter in a url of an artist home page (Follows this format: https://kemono.party/fanbox/user/xxxxxxxx)
+- Read the command line arguments for instructions on how to run.
 - Enjoy!
 
 ## Command line arguments:
@@ -18,11 +47,11 @@ KMPDownloader.py -f <.txt> : Bulk downloads all links in .txt file, must be last
 
 KMPDownloader.py -d <path> : Sets download path for a single download instance, must use /
   
-  KMPDownloader.py -v : Enables unzipping of files automatically
+KMPDownloader.py -v : Enables unzipping of files automatically
   
-  KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
+KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
   
-  KMPDownloader.py -t <#> : Change download thread count (default is 6)
+KMPDownloader.py -t <#> : Change download thread count (default is 6)
  
 KMPDownloader.py -h : Help
   
@@ -55,6 +84,23 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 - downloads saved using default name
 - Files downloaded with a counter 0..n where 0 is the first file on the page and n is the last file on the page
 
+## Troubleshooting
+  ### Password protected directory:
+    atool: ... cmdlist_func = <function extract_7z at 0x000001DB5A894700> 
+    patool: ... kwargs={'password': None} args=('C:/Users/chenj/Downloads/KMPDownloader/pass_2.7z', None, 'C:\\7-Zip\\7z.EXE', -1, False,       'C:\\Users\\chenj\\Downloads\\KMPDownloader')
+    ERROR: Data Error in encrypted file. Wrong password? : pass.7z
+  
+  Zip is password protected. The file will be skipped and will have to be manually extracted.
+  Note that the top 2 lines are normal, only the 'ERROR' line needs attention.
+  ***Hint - look at post_comments.txt or post_content.txt to see if the password is there 
+ 
+  ### Path too long:
+    ERROR: Can not open output file : The system cannot find the path specified. : c:/Users/chenj/Downloads/KMPDownloader/Northlandscapes Photography/FREE Astro  Night Sky Photography Lightroom Presets Pay-What-You-Want by Northlandscapes Photography from Gumroad  Kemono/Lightroom 4-6 and Classic CC before Apr 2018 (.lrtemplate)\Northlandscapes - Astrophotography\Virgo.lrtemplate
+  
+   Extract file length is too long and zip file could not be extracted. Extraction is done on your computer's temp directory. More information about temp
+  directory can be found here: http://sales.commence.com/commencekb/Article.aspx?id=10068. Adjust the temp path directory to be shorter or you can extract
+  the file manually.
+  
 ## Known bugs:
 - post_content.txt may contain garbage data at times
 
@@ -62,6 +108,19 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 These bugs were accounted for but not enough testing has been conducted
   
 None
+  
+ ## Changelog 0.4
+  - Post comments are now downloadable
+  - Reports program running time
+  - Pre emptive server disconnect is fixed 
+  - Fixed issue where non zip files was unzipped.
+  - Downloads the human readable filename displayed on Kemono itself for attachments instead of the scrambled text
+  - Fixed issue where certain file types were downloaded as .bin instead of the correct extension
+  - Expanded automatic unzipping to .zip, .7z, and .rar.
+  - Replaced illegal file characters with "" instead of "_"
+  - Japanese and other unusual file names now show proper names instead of corrupted characters
+  - Fixed issue where post content was generated when no text is present
+  - Supports Linux style file paths containing './' and '../'
   
  ## Changelog 0.3.5
   - Some edits made to be compatible with Windows
@@ -121,4 +180,3 @@ None
 - GUI
 - Command line argument support for more settings
 - Automatic Gdrive and Mega download from links (Unlikely)
-- Save Comments
