@@ -203,7 +203,7 @@ class KMP:
 
                 os.remove(zippath)
             except util.PatoolError:
-                logging.critical("Unzipping a non zip file has occured or character limit for path has been reached" +
+                logging.critical("Unzipping a non zip file has occured or character limit for path has been reached or zip is password protected" +
                                 "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
