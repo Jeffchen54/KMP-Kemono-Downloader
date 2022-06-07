@@ -1,3 +1,6 @@
+import shutil
+from tempfile import tempdir
+import tempfile
 import threading
 from threading import Lock
 import requests
@@ -16,7 +19,6 @@ from HashTable import HashTable
 from HashTable import KVPair
 from datetime import timedelta
 from Threadpool import ThreadPool
-import dirs
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
@@ -25,15 +27,16 @@ Using multithreading
 - Reports program running time
 - Pre emptive server disconnect fixed
 - Fixed issue where non zip file was unzipped
-- Downloads the name shown in Kemono itself, not the scrambled mess
+- Downloads the name shown in Kemono itself, not the scrambled mess of characters
+- Fixed issues where certain file types were downloaded as .bin instead of the correct extension
 - Supports automatic unzipping of .zip, .7z, and .rar 
 - Replace illegal file characters with "" instead of "_"
 - Japanese and other unusual file names now show proper names instead of corrupted characters
-- TODO remove gumroad comment not available
-- Fixed bug where empty post comment was generated when no text is present
+- Fixed bug where empty post content was generated when no text is present
+- Supports Linux style file paths containing '.' and '..'
 @author Jeff Chen
 @version 0.4
-@last modified 5/19/2022
+@last modified 6/7/2022
 """
 
 # DO NOT EDIT ################################################
@@ -155,8 +158,12 @@ class KMP:
                         done = True
                         logging.debug("Downloaded Size (" + fname + ") -> " + fullsize)
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
-                    logging.debug(tname + ": Chunked encoding error has occured, server has likely disconnected, download has restarted")
+                    logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
+                except FileNotFoundError:
+                    logging.debug("Cannot be downloaded, file likely a link, not a file ->" + fname)
+                    done = True
                 scraper.close()
+
 
             # Unzip file if specified
             if self.__unzip and self.__supported_zip_type(fname):
@@ -177,23 +184,30 @@ class KMP:
     def __extract_zip(self, zippath: str, destpath: str) -> None:
         """
         Extracts a zip file to a destination. Does nothing if file
-        is password protected.
+        is password protected. Zipfile is deleted if extraction is 
+        successfiul
 
         Param:
         unzip: full path to zip file included zip file itself
         destpath: full path to destination
         """
-        try:
-            print(zippath)
-            print(destpath)
-            patoolib.extract_archive(zippath, outdir=destpath)
-            os.remove(zippath)
-        except util.PatoolError:
-            logging.critical("Unzipping a non zip file has occured, please check if file has been downloaded properly" +
-                             "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
-        except RuntimeError:
-            logging.debug("File name: " + zippath + "\n" +
-                          "File size: " + str(os.stat(zippath).st_size))
+
+        # A tempdir is used to bypass Window's 255 char limit when unzipping files
+        with tempfile.TemporaryDirectory(prefix="temp") as dirpath:
+            try:
+                print(destpath)
+                patoolib.extract_archive(zippath, outdir=dirpath + '/', verbosity=-1, interactive=False)
+
+                for f in os.listdir(dirpath):
+                    shutil.move(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f))
+
+                os.remove(zippath)
+            except util.PatoolError:
+                logging.critical("Unzipping a non zip file has occured or character limit for path has been reached" +
+                                "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
+            except RuntimeError:
+                logging.debug("File name: " + zippath + "\n" +
+                            "File size: " + str(os.stat(zippath).st_size))
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -252,6 +266,7 @@ class KMP:
         
         Raise: DeadThreadPoolException when no download threads are available
         """
+        logging.debug("Processing: " + url + " to be stored in " + root)
         if not self.__threads.get_status():
             raise DeadThreadPoolException
 
@@ -311,9 +326,9 @@ class KMP:
 
 
         # Download post comments ################################################
-        if(os.path.exists(titleDir + "post__content.txt")):
+        if(os.path.exists(titleDir + "post__comments.txt")):
                 logging.debug("Skipping duplicate post comments")
-        elif "gumroad" not in url:
+        elif "patreon" in url or "fanbox" in url:
             comments = soup.find("div", class_="post__comments")
             if comments and len(comments.getText(strip=True)) > 0:
                 text = comments.getText(separator='\n', strip=True)
@@ -501,7 +516,10 @@ def main() -> None:
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
-                folder = dirs.convert_win_to_py_path(dirs.replace_dots_to_py_path(sys.argv[pointer + 1]))
+                #folder = dirs.convert_win_to_py_path(dirs.replace_dots_to_py_path(sys.argv[pointer + 1]))
+                folder = os.path.abspath(sys.argv[pointer + 1])
+                if not folder[len(folder) - 1] == '\\':
+                    folder += '\\'
                 pointer += 2
                 logging.info("FOLDER -> " + folder)
             elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:
