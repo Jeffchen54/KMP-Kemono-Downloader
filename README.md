@@ -31,7 +31,7 @@ View changelog for more details on features not included here.
     
     pip install tqdm
     
-    pip install patoolib
+    pip install patool
 - Install 7z and add it to your Window's Path. Line should be in the format "C:\Users\chenj\Downloads\7-Zip"
 - Copy and paste the files in patch for patoolib into your patoolib library. You can also grab the patched files from https://github.com/wummel/patool/pull/83/commits/c5282e30e1b3448081d74a0b8a86c7c9ecaaebbf. On my computer, the directory
 is "C:\Users\chenj\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\patoolib\programs".
