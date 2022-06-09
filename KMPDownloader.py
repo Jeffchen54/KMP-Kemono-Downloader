@@ -109,7 +109,6 @@ class KMP:
         Param:
             src: src of image to download
             fname: what to name the file to download
-            tname: thread name
         """
         logging.debug("Downloading " + fname + " from " + src)
         scraper = cfscrape.create_scraper()
@@ -168,6 +167,7 @@ class KMP:
             # Unzip file if specified
             if self.__unzip and self.__supported_zip_type(fname):
                 self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
+            counter = 0
 
     def __supported_zip_type(self, fname:str) -> bool:
         """
@@ -261,7 +261,7 @@ class KMP:
         if not self.__threads.get_status():
             raise DeadThreadPoolException
 
-        global counter
+        counter = 0
         for link in imgLinks:
             href = link.get('href')
             # Type 1 image - Image in Files section
@@ -285,7 +285,6 @@ class KMP:
             if src:
                 logging.debug("Extracted content link: " + src)
                 fname = dir + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                
                 self.__threads.enqueue((self.__download_file, (src, fname)))
                 counter += 1
 
@@ -554,8 +553,6 @@ class KMP:
         self.__kill_threads(self.__threads)
         logging.info("Files downloaded: " + str(fcount))
         
-        global counter
-        counter = 0
 
 
 def help() -> None:
