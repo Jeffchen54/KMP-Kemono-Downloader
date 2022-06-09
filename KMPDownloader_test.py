@@ -354,6 +354,16 @@ ____________________________________________________________\n\
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "Tatyworks")), 19828495)
         os.remove(temp)
 
+    def test_download_polluted_href(self):
+        """
+        Tests downloading files from a source that contains both internally hosted
+        and externally hosted URLs. 
+        """
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=2, chunksz=None)
+        self.KMP.routine("https://kemono.party/fanbox/user/3102267/post/3841095")
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "mochitaichi/抱き枕カバー用のラフ by mochitaichi from Pixiv Fanbox  Kemono")), 3716346)
+
+
     def test_download_different_services(self):
         """
         Tests downloading of difference services. Downloads single work 

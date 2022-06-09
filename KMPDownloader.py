@@ -27,6 +27,7 @@ Using multithreading
 - Fixed extremely rare bug where human readable download file name is corrupted on server
     so hashed file name will be scraped instead
 - Links and text in file segment now saved to file__text.txt
+- Patch cases where Fanbox works have polluted links which cause errors if download is attempted on them
 - TODO Discord
 - TODO Improvement to post comments
 - TODO Improve fragmented download protocol
@@ -42,6 +43,7 @@ fcount = 0  # Number of downloaded files
 fcount_mutex = Lock()   # Mutex for fcount 
 tname = threading.local()   # TLV for thread name
 kill = False    # Kill switch for downThreads
+counter = 0
 
 
 class Error(Exception):
@@ -122,6 +124,7 @@ class KMP:
         downloaded = 0
         f = fname.split('/')[len(fname.split('/')) - 1]
         # Download file, skip duplicate files
+        
         if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
             done = False
             while(not done):
@@ -159,6 +162,7 @@ class KMP:
                     logging.debug("Cannot be downloaded, file likely a link, not a file ->" + fname)
                     done = True
                 scraper.close()
+
 
 
             # Unzip file if specified
@@ -257,25 +261,33 @@ class KMP:
         if not self.__threads.get_status():
             raise DeadThreadPoolException
 
-        counter = 0
+        global counter
         for link in imgLinks:
+            href = link.get('href')
             # Type 1 image - Image in Files section
-            if link.get('href'):
-                src = containerPrefix + link.get('href')
+            if href:
+                src = containerPrefix + href
             # Type 2 image - Image in Content section
             else:
+                
                 target = link.get('src')
-                # Hosted on non KMP server
-                if 'http' in target:
-                    src = target
-                # Hosted on KMP server
+               # Polluted link check, Fanbox is notorious for this
+                if "downloads.fanbox" not in target:
+                     # Hosted on non KMP server
+                    if 'http' in target:
+                        src = target
+                    # Hosted on KMP server
+                    else:
+                        src = containerPrefix + target
                 else:
-                    src = containerPrefix + target
-            fname = dir + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
-
-            self.__threads.enqueue((self.__download_file, (src, fname)))
-
-            counter += 1
+                    src = None
+                
+            if src:
+                logging.debug("Extracted content link: " + src)
+                fname = dir + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                
+                self.__threads.enqueue((self.__download_file, (src, fname)))
+                counter += 1
 
     def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
         """
@@ -341,7 +353,7 @@ class KMP:
             time.sleep(2)
             reqs = requests.get(url)
             soup = BeautifulSoup(reqs.text, 'html.parser')
-        imgLinks = soup.find_all("a", class_="fileThumb")
+        imgLinks = soup.find_all("a", {'class':'fileThumb'})
         titleDir = os.path.join(root, \
             (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
              ).split("/")[0] + "/")
@@ -392,7 +404,6 @@ class KMP:
                 download = attachment.get('href')
                 src = containerPrefix + download
                 fname = os.path.join(titleDir, self.__trim_fname(attachment.text.strip()))
-
                 self.__threads.enqueue((self.__download_file, (src, fname)))
 
 
@@ -542,6 +553,9 @@ class KMP:
         # Close threads ###########################
         self.__kill_threads(self.__threads)
         logging.info("Files downloaded: " + str(fcount))
+        
+        global counter
+        counter = 0
 
 
 def help() -> None:
