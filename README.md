@@ -21,6 +21,8 @@ View changelog for more details on features not included here.
 *Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
 
 ## Instructions:
+**Need in depth details? Go to the latest release and read the powerpoint there!**
+
 - Download all required dependencies
 
     pip install requests
