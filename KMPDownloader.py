@@ -28,6 +28,8 @@ Using multithreading
     so hashed file name will be scraped instead
 - Links and text in file segment now saved to file__text.txt
 - Patch cases where Fanbox works have polluted links which cause errors if download is attempted on them
+- Patch case where an artist work has multiple zip files containing the same directory
+- Fixed bug where file name was not being trimmed enough
 - TODO Discord
 - TODO Improvement to post comments
 - TODO Improve fragmented download protocol
@@ -35,15 +37,6 @@ Using multithreading
 @version 0.4.1
 @last modified 6/7/2022
 """
-
-# DO NOT EDIT ################################################
-containerPrefix = "https://kemono.party"
-register = HashTable(10)    # Registers a directory, combats multiple posts using the same name
-fcount = 0  # Number of downloaded files
-fcount_mutex = Lock()   # Mutex for fcount 
-tname = threading.local()   # TLV for thread name
-kill = False    # Kill switch for downThreads
-counter = 0
 
 
 class Error(Exception):
@@ -75,6 +68,12 @@ class KMP:
     __chunksz: int
     __threads:ThreadPool
 
+    # DO NOT EDIT ################################################
+    __CONTAINER_PREFIX = "https://kemono.party"
+    __register = HashTable(10)    # Registers a directory, combats multiple posts using the same name
+    __fcount = 0  # Number of downloaded files
+    __fcount_mutex = Lock()   # Mutex for fcount 
+
     def __init__(self, folder: str, unzip: bool, tcount: int | None, chunksz: int | None) -> None:
         """
         Initializes all variables. Does not run the program
@@ -85,7 +84,6 @@ class KMP:
             tcount: Number of threads to use, max thread count is 12, default is 6
             chunksz: Download chunk size, default is 1024 * 1024 * 64
         """
-        tname.name = "main"
         if folder:
             self.__folder = folder
         else:
@@ -148,10 +146,9 @@ class KMP:
                         time.sleep(1)
                         bar.clear()
 
-                    fcount_mutex.acquire()
-                    global fcount
-                    fcount += 1
-                    fcount_mutex.release()
+                    self.__fcount_mutex.acquire()
+                    self.__fcount += 1
+                    self.__fcount_mutex.release()
                     if(os.stat(fname).st_size == int(fullsize)):
                         done = True
                         logging.debug("Downloaded Size (" + fname + ") -> " + fullsize)
@@ -164,10 +161,9 @@ class KMP:
 
 
 
-            # Unzip file if specified
-            if self.__unzip and self.__supported_zip_type(fname):
-                self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
-            counter = 0
+        # Unzip file if specified
+        if self.__unzip and self.__supported_zip_type(fname):
+            self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
 
     def __supported_zip_type(self, fname:str) -> bool:
         """
@@ -198,7 +194,12 @@ class KMP:
                 patoolib.extract_archive(zippath, outdir=dirpath + '/', verbosity=-1, interactive=False)
 
                 for f in os.listdir(dirpath):
-                    shutil.move(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f))
+                    if os.path.isdir(os.path.abspath(dirpath + "/" + f)):
+                        shutil.copytree(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f), dirs_exist_ok=True)
+                        shutil.rmtree(os.path.abspath(dirpath + "/" + f), ignore_errors=True)
+                    else:
+                        shutil.copy(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f))
+                        os.remove(os.path.abspath(dirpath + "/" + f))
 
                 os.remove(zippath)
             except util.PatoolError:
@@ -235,8 +236,8 @@ class KMP:
         Return: trimmed filename with extension
         """
         # Case 3, space
-        case3 = fname.rpartition(' ')[2]
-        if case3 != fname:
+        case3 = fname.partition(' ')[2]
+        if case3 != fname and len(case3) > 0:
             return case3
 
         case1 = fname.rpartition('=')[2]
@@ -266,7 +267,7 @@ class KMP:
             href = link.get('href')
             # Type 1 image - Image in Files section
             if href:
-                src = containerPrefix + href
+                src = self.__CONTAINER_PREFIX + href
             # Type 2 image - Image in Content section
             else:
                 
@@ -278,7 +279,7 @@ class KMP:
                         src = target
                     # Hosted on KMP server
                     else:
-                        src = containerPrefix + target
+                        src = self.__CONTAINER_PREFIX + target
                 else:
                     src = None
                 
@@ -359,12 +360,12 @@ class KMP:
 
 
         # Check if directory has been registered ###################################
-        value = register.hashtable_lookup_value(titleDir)
+        value = self.__register.hashtable_lookup_value(titleDir)
         if value != None:  # If register, update titleDir and increment value
-            register.hashtable_edit_value(titleDir, value + 1)
+            self.__register.hashtable_edit_value(titleDir, value + 1)
             titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")/"
         else:   # If not registered, add to register at value 1
-            register.hashtable_add(KVPair[str, int](titleDir, 1))
+            self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
 
         # Create directory if not registered
         if not os.path.isdir(titleDir):
@@ -401,8 +402,19 @@ class KMP:
         if attachments:
             for attachment in attachments:
                 download = attachment.get('href')
-                src = containerPrefix + download
+                src = self.__CONTAINER_PREFIX + download
                 fname = os.path.join(titleDir, self.__trim_fname(attachment.text.strip()))
+
+                # Check if the post attachment shares the same name as another post attachemnt
+                # Adjust filename if found
+                value = self.__register.hashtable_lookup_value(fname)
+                if value != None:  # If register, update titleDir and increment value
+                    self.__register.hashtable_edit_value(fname, value + 1)
+                    split = fname.partition('.')
+                    fname = split[0] + "(" + str(value) + ")." + split[2]
+                else:   # If not registered, add to register at value 1
+                    self.__register.hashtable_add(KVPair[str, int](fname, 1))
+
                 self.__threads.enqueue((self.__download_file, (src, fname)))
 
 
@@ -445,7 +457,7 @@ class KMP:
             for link in contLinks:
                 content = link.find("a")
                 self.__process_container(
-                    containerPrefix + content.get('href'), titleDir)
+                    self.__CONTAINER_PREFIX + content.get('href'), titleDir)
 
             if continuous:
                 # Move to next window
@@ -551,7 +563,7 @@ class KMP:
             self.__call_and_interpret_url(url)
         # Close threads ###########################
         self.__kill_threads(self.__threads)
-        logging.info("Files downloaded: " + str(fcount))
+        logging.info("Files downloaded: " + str(self.__fcount))
         
 
 

@@ -67,6 +67,10 @@ class KMPTestCase(unittest.TestCase):
         self.assertEqual(self.KMP._KMP__trim_fname(
             "Download まとめDL用.zip"), "まとめDL用.zip")
 
+        # Case 3 -> Multiple spaces
+        self.assertEqual(self.KMP._KMP__trim_fname(
+            "Download 1_2 2016 aged whiskey.zip"), "1_2 2016 aged whiskey.zip")
+
         # Case 2 -> Bad extension
         self.assertEqual(self.KMP._KMP__trim_fname(
             "/data/3d/68/3d68def31822e95ad249ceb2237fcdae29b644e6702366ddae761572be900955.jpg?f=https%3A//c10.patreonusercontent.\
@@ -77,6 +81,8 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         self.assertEqual(self.KMP._KMP__trim_fname(
             "/data/4f/83/4f83453fc625095401da81248a2242246b01b229bc5e1b2e1dd470da866f1980.jpg?f=b9ffc2f9-2c11-42c8-b5a2-7995a233ca41\
 .jpg"), "b9ffc2f9-2c11-42c8-b5a2-7995a233ca41.jpg")
+
+        self.assertEqual(self.KMP._KMP__trim_fname("/data/8b/e7/8be7e3fc0b0304c97b0bd5d9f7a66b2ad97c2d798808b52824642480e8dfe0d7.gif?f=BBS-Snoggler-Update.gif"), "BBS-Snoggler-Update.gif")
 
     def test_download_static_files(self) -> None:
         """
@@ -363,6 +369,20 @@ ____________________________________________________________\n\
         self.KMP.routine("https://kemono.party/fanbox/user/3102267/post/3841095")
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "mochitaichi/抱き枕カバー用のラフ by mochitaichi from Pixiv Fanbox  Kemono")), 3716346)
 
+    def test_extract_same__dest(self):
+        """
+        Tests extracting xzip files to the same directory
+        """
+        # Zip File already exists
+        
+        second = KMP(self.tempdir, unzip=True, tcount=2, chunksz=None)
+        second.routine("https://kemono.party/fanbox/user/646778/post/3474562")
+
+        self.assertFalse(os.path.exists(os.path.join(self.tempdir, "nbit/Basic 2022年 03月 by nbit from Pixiv Fanbox  Kemono/01basic - Blue Archive Ako.zip")))
+        self.assertFalse(os.path.exists(os.path.join(self.tempdir, "nbit/Basic 2022年 03月 by nbit from Pixiv Fanbox  Kemono/01basic - Blue Archive Ako.zip")))
+        size = self.getDirSz(self.tempdir + (
+            r"nbit/Basic 2022年 03月 by nbit from Pixiv Fanbox  Kemono/cap"))
+        self.assertEqual(size, 110496664)
 
     def test_download_different_services(self):
         """
