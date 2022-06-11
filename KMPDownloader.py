@@ -35,7 +35,7 @@ Using multithreading
 - TODO Improve fragmented download protocol
 @author Jeff Chen
 @version 0.4.1
-@last modified 6/7/2022
+@last modified 6/11/2022
 """
 
 
