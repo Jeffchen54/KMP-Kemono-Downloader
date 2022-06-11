@@ -109,6 +109,13 @@ These bugs were accounted for but not enough testing has been conducted
   
 None
   
+ ## Changlelog 0.4.1
+  - Images in Content section downloaded
+  - Fixed extremely rare bug where human readable download file name is corrupted on server so hashed file name will be scraped instead
+  - Links and text in file segment now saved to file__text.txt
+  - Patch cases where Fanbox works have polluted links which cause errors if download is attempted on them
+  - Patch case where an artist work has multiple zip files containing the same directory
+  - Fixed bug where file name was not being trimmed enough
  ## Changelog 0.4
   - Post comments are now downloadable
   - Reports program running time
