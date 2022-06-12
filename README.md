@@ -110,8 +110,10 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 These bugs were accounted for but not enough testing has been conducted
   
 None
-  
- ## Changlelog 0.4.1
+ ## Changelog 0.4.1
+    - Added connectivity protocol where program will attempt to reconnect forever until a connection is made
+    
+ ## Changelog 0.4 
   - Images in Content section downloaded
   - Fixed extremely rare bug where human readable download file name is corrupted on server so hashed file name will be scraped instead
   - Links and text in file segment now saved to file__text.txt
