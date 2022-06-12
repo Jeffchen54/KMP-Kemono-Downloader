@@ -209,9 +209,10 @@ class KMP:
                         os.remove(os.path.abspath(dirpath + "/" + f))
 
                 os.remove(zippath)
-            except util.PatoolError:
+            except util.PatoolError as e:
                 logging.critical("Unzipping a non zip file has occured or character limit for path has been reached or zip is password protected" +
                                 "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
+                logging.critical(e)
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
                             "File size: " + str(os.stat(zippath).st_size))
@@ -618,9 +619,9 @@ def main() -> None:
     """
     Program runner
     """
-    #logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO)
+    # logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False
