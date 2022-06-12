@@ -54,6 +54,7 @@ class KMPTestCase(unittest.TestCase):
         self.assertRaises(DeadThreadPoolException, self.KMP._KMP__call_and_interpret_url,
                           "https://kemono.party/gumroad/user/9222612694494/post/AizNy")
 
+        self.KMP.close()
     def test_trim_fname(self) -> None:
         """
         Tests __trim_fname
@@ -83,7 +84,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
 .jpg"), "b9ffc2f9-2c11-42c8-b5a2-7995a233ca41.jpg")
 
         self.assertEqual(self.KMP._KMP__trim_fname("/data/8b/e7/8be7e3fc0b0304c97b0bd5d9f7a66b2ad97c2d798808b52824642480e8dfe0d7.gif?f=BBS-Snoggler-Update.gif"), "BBS-Snoggler-Update.gif")
-
+        self.KMP.close()
     def test_download_static_files(self) -> None:
         """
         Tests downloading files under different circumstances
@@ -93,31 +94,37 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         self.KMP = KMP(self.tempdir, unzip=False, tcount=1, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/33271853/post/36694748")
+        self.KMP.close()
 
         # 3 Thread no image
         self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/33271853/post/47946953")
+        self.KMP.close()
 
         # Single Thread, 2 image
         self.KMP = KMP(self.tempdir, unzip=False, tcount=1, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/33271853/post/36001529")
+        self.KMP.close()
 
         # 3 Threads, 2 image
         self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/33271853/post/47255266")
+        self.KMP.close()
 
         # 1 Thread, multi images
         self.KMP = KMP(self.tempdir, unzip=False, tcount=1, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/33271853/post/65647736")
+        self.KMP.close()
 
         # 16 Thread multi images
         self.KMP = KMP(self.tempdir, unzip=False, tcount=16, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/33271853/post/52792630")
+        self.KMP.close()
 
         # Verify content:
         self.assertEqual(os.stat(
@@ -168,11 +175,13 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         self.KMP = KMP(self.tempdir, unzip=False, tcount=1, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/gumroad/user/5563321775917/post/wSIJ")
+        self.KMP.close()
 
         # Single .cvf
         self.KMP = KMP(self.tempdir, unzip=False, tcount=1, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/gumroad/user/5563321775917/post/mRSH")
+        self.KMP.close()
 
         self.assertEqual(os.stat(
             self.tempdir + "Gumroad Help Center/New Creator FAQ - All the Basics in One Place by Gumroad Help Center from Gumroad  Kemono/Creatorpedia.pdf").st_size, 14704)
@@ -187,6 +196,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         self.KMP = KMP(self.tempdir, unzip=False, tcount=2, chunksz=None)
         self.KMP.routine(
             "https://kemono.party/patreon/user/523894/post/66527944")
+        self.KMP.close()
 
         # Single .mp4
         self.KMP.routine(
@@ -226,6 +236,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
             self.tempdir + "Gumroad Help Center/A Music Album - Jam time by Gumroad Help Center from Gumroad  Kemono/Tribute_to_1776.mp3").st_size, 6244398)
         self.assertEqual(os.stat(
             self.tempdir + "Gumroad Help Center/A Music Album - Jam time by Gumroad Help Center from Gumroad  Kemono/Why_Am_I_Michael_Bluth.mp3").st_size, 1746643)
+        self.KMP.close()
 
     def test_download_zip_attachments(self) -> None:
         """
@@ -239,6 +250,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         size = self.getDirSz(self.tempdir + (
             r"SampleScience Plugins  Samples/SampleScience TR-626 HD by SampleScience Plugins  Samples. from Gumroad  Kemono/SampleScience_TR626_HD"))
         self.assertEqual(size, 4509259)
+        self.KMP.close()
 
     def test_download_alternate_zip_attachments(self) -> None:
         """
@@ -255,6 +267,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         size = self.getDirSz(self.tempdir + (
             r"Joe Daniels/jd Flour Sack rig for Maya by Joe Daniels from Gumroad  Kemono/jd_floursack"))
         self.assertEqual(size, 4878146)
+        self.KMP.close()
 
     def test_download_non_file(self) -> None:
         """
@@ -263,6 +276,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         # If it don't crash, it pass
         self.KMP = KMP(self.tempdir, unzip=True, tcount=1, chunksz=None)
         self.KMP.routine("https://kemono.party/patreon/user/8296916/post/59821763")
+        self.KMP.close()  
     
     def test_download_empty_window(self) -> None:
         """
@@ -272,6 +286,7 @@ com/3/e30%253D/patreon-media/p/post/30194248/7cffbc9604664ccab13f3b57fdc78e6f/1.
         self.KMP = KMP(self.tempdir, unzip=True, tcount=1, chunksz=None)
         self.KMP.routine("https://kemono.party/patreon/user/8296916/post/59821763")
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "Gunwild")), 0)
+        self.KMP.close()
 
     def test_file_text(self) -> None:
         """
@@ -294,6 +309,7 @@ https://twitter.com/misswarmj/status/1176210868121546752\n\
 \
 ____________________________________________________________\n\
 ")
+        self.KMP.close()
 
 
     def test_download_bulk(self) -> None:
@@ -359,6 +375,7 @@ ____________________________________________________________\n\
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "Skylleon")), 4246089)
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "Tatyworks")), 19828495)
         os.remove(temp)
+        self.KMP.close()
 
     def test_download_polluted_href(self):
         """
@@ -368,6 +385,7 @@ ____________________________________________________________\n\
         self.KMP = KMP(self.tempdir, unzip=True, tcount=2, chunksz=None)
         self.KMP.routine("https://kemono.party/fanbox/user/3102267/post/3841095")
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "mochitaichi/抱き枕カバー用のラフ by mochitaichi from Pixiv Fanbox  Kemono")), 3716346)
+        self.KMP.close()
 
     def test_extract_same__dest(self):
         """
@@ -383,6 +401,7 @@ ____________________________________________________________\n\
         size = self.getDirSz(self.tempdir + (
             r"nbit/Basic 2022年 03月 by nbit from Pixiv Fanbox  Kemono/cap"))
         self.assertEqual(size, 110496664)
+        second.close()
 
     def test_download_different_services(self):
         """
@@ -453,6 +472,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.assertTrue(os.path.exists(os.path.join(self.tempdir, "dreamsavior/Error File list not found in init file by dreamsavior from Patreon  Kemono/0.jpg")))
         self.assertTrue(os.path.exists(os.path.join(self.tempdir, "dreamsavior/Error File list not found in init file by dreamsavior from Patreon  Kemono/1.png")))
         self.assertTrue(os.path.exists(os.path.join(self.tempdir, "dreamsavior/Error File list not found in init file by dreamsavior from Patreon  Kemono/2.png")))
+        self.KMP.close()
 
     def test_post_comments(self) -> None:
         """
@@ -478,6 +498,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         # Not empty
         self.KMP.routine("https://kemono.party/fanbox/user/237083/post/3011863")
         self.assertTrue(os.path.exists(os.path.join(self.tempdir, "Blood Rouge/WIP唾吐きクソビッチと化した金城遙華 by Blood Rouge from Pixiv Fanbox  Kemono/post__comments.txt")))       
+        self.KMP.close()
 
     def test_broken_url(self):
         """
@@ -488,6 +509,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
             self.KMP.routine("https://kemono.party/patreon/user/5489259/post/30194248")
             self.assertTrue(os.path.exists(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/0.jpg")))
             self.assertTrue(os.path.exists(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/1.jpg")))
+            self.KMP.close()
 
     def getDirSz(self, dir: str) -> int:
         """

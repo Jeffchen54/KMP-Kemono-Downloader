@@ -14,6 +14,7 @@ from tqdm import tqdm
 import logging
 import patoolib
 from patoolib import util
+import requests.adapters
 
 from HashTable import HashTable
 from HashTable import KVPair
@@ -23,18 +24,9 @@ from Threadpool import ThreadPool
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Images in Content section downloaded
-- Fixed extremely rare bug where human readable download file name is corrupted on server
-    so hashed file name will be scraped instead
-- Links and text in file segment now saved to file__text.txt
-- Patch cases where Fanbox works have polluted links which cause errors if download is attempted on them
-- Patch case where an artist work has multiple zip files containing the same directory
-- Fixed bug where file name was not being trimmed enough
-- TODO Discord
-- TODO Improvement to post comments
-- TODO Improve fragmented download protocol
+- Automatic connection retry when connection is lost with Kemono server
 @author Jeff Chen
-@version 0.4.1
+@version 0.4.2
 @last modified 6/11/2022
 """
 
@@ -67,6 +59,7 @@ class KMP:
     __tcount: int
     __chunksz: int
     __threads:ThreadPool
+    __session:requests.Session
 
     # DO NOT EDIT ################################################
     __CONTAINER_PREFIX = "https://kemono.party"
@@ -101,6 +94,17 @@ class KMP:
         else:
             self.__chunksz = 1024 * 1024 * 64
 
+        # Create session ###########################
+        self.__session = cfscrape.create_scraper(requests.Session())
+        adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
+        self.__session.mount('http://', adapter)
+        
+    def close(self):
+        """
+        Closes KMP download session, cannot be reopened 
+        """
+        self.__session.close()
+
     def __download_file(self, src: str, fname: str) -> None:
         """
         Downloads file at src. Skips duplicate files
@@ -109,13 +113,12 @@ class KMP:
             fname: what to name the file to download
         """
         logging.debug("Downloading " + fname + " from " + src)
-        scraper = cfscrape.create_scraper()
         r = None
         while not r:
             try:
                 # Get download size
-                r = scraper.request('HEAD', src)
-            except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
+                r = self.__session.request('HEAD', src, timeout=5)
+            except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 logging.debug("Connection request unanswered, retrying")
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
@@ -127,8 +130,13 @@ class KMP:
             while(not done):
                 try:
                     # Download file to memory
-                    data = scraper.get(src, stream=True, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
-
+                    data = None
+                    while not data:
+                        try:
+                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
+                        except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                             logging.debug("Connection timeout")
+                            
                     # Download the file
                     with open(fname, 'wb') as fd, tqdm(
                             desc=fname,
@@ -157,7 +165,6 @@ class KMP:
                 except FileNotFoundError:
                     logging.debug("Cannot be downloaded, file likely a link, not a file ->" + fname)
                     done = True
-                scraper.close()
 
 
 
@@ -345,13 +352,23 @@ class KMP:
             raise DeadThreadPoolException
 
         # Get HTML request and parse the HTML for image links and title ############
-        reqs = requests.get(url)
+        reqs = None
+        while not reqs:
+            try:
+                reqs = self.__session.get(url, timeout=5)
+            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                 logging.debug("Connection timeout")
         soup = BeautifulSoup(reqs.text, 'html.parser')
         while "500 Internal Server Error" in soup.find("title"):
             logging.error("500 Server error encountered at " +
                           url + ", retrying...")
             time.sleep(2)
-            reqs = requests.get(url)
+            reqs = None
+            while not reqs:
+                try:
+                    reqs = self.__session.get(url, timeout=5)
+                except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                    logging.debug("Connection timeout")
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
         titleDir = os.path.join(root, \
@@ -437,7 +454,12 @@ class KMP:
             url: url of the main artist window
             continuous: True to attempt to visit next pages of content, False to not 
         """
-        reqs = requests.get(url)
+        reqs = None
+        while not reqs:
+            try:
+                reqs = self.__session.get(url, timeout=5)
+            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                 logging.debug("Connection timeout")
         soup = BeautifulSoup(reqs.text, 'html.parser')
         reqs.close()
         # Create directory
@@ -462,7 +484,12 @@ class KMP:
             if continuous:
                 # Move to next window
                 counter += 25
-                reqs = requests.get(url + suffix + str(counter))
+                reqs = None
+                while not reqs:
+                    try:
+                        reqs = self.__session.get(url + suffix + str(counter), timeout=5)
+                    except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                         logging.debug("Connection timeout")
                 soup = BeautifulSoup(reqs.text, 'html.parser')
                 reqs.close()
                 contLinks = soup.find_all("div", class_="post-card__link")
@@ -487,7 +514,12 @@ class KMP:
             self.__process_window(url, False)
         elif "post" in url:
             # Build directory
-            reqs = requests.get(url)
+            reqs = None
+            while not reqs:
+                try:
+                    reqs = self.__session.get(url, timeout=5)
+                except(requests.exceptions.ConnectionError ,requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                     logging.debug("Connection timeout")
             if(reqs.status_code >= 400):
                 logging.error("Status code " + str(reqs.status_code))
             soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -538,7 +570,6 @@ class KMP:
         url: supported url(s), if single string, process single url, if list, process multiple
             urls. If None, ask user for a url
         """
-
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
 
@@ -564,7 +595,6 @@ class KMP:
         # Close threads ###########################
         self.__kill_threads(self.__threads)
         logging.info("Files downloaded: " + str(self.__fcount))
-        
 
 
 def help() -> None:
@@ -573,7 +603,6 @@ def help() -> None:
     """
     logging.info(
         "Switches: Can be combined in any order!")
-    logging.info("No switch : Prompts user with download url")
     logging.info(
         "-f <textfile.txt> : Download from text file containing links")
     logging.info(
@@ -627,11 +656,15 @@ def main() -> None:
             else:
                 pointer = len(sys.argv)
 
+    # Run the downloader
     if folder:
         downloader = KMP(folder, unzip, tcount, chunksz)
         downloader.routine(urls)
+        downloader.close()
     else:
         help()
+
+    # Report time
     end_time = time.monotonic()
     logging.info(timedelta(seconds=end_time - start_time))
 
