@@ -111,7 +111,7 @@ These bugs were accounted for but not enough testing has been conducted
   
 None
  ## Changelog 0.4.1
-    - Added connectivity protocol where program will attempt to reconnect forever until a connection is made
+  - Added connectivity protocol where program will attempt to reconnect forever until a connection is made
     
  ## Changelog 0.4 
   - Images in Content section downloaded
