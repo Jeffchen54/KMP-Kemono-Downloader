@@ -1,7 +1,6 @@
 import shutil
 from tempfile import tempdir
 import tempfile
-import threading
 from threading import Lock
 import requests
 from bs4 import BeautifulSoup, ResultSet
@@ -133,7 +132,7 @@ class KMP:
                     data = None
                     while not data:
                         try:
-                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'cookie':'__ddg1_=uckPSs0T21TEh1iAB4I5; _pk_id.1.5bc1=0767e09d7dfb4923.1652546737.; session=eyJfcGVybWFuZW50Ijp0cnVlLCJhY2NvdW50X2lkIjoxMTg1NTF9.Yn_ctw.BR10xbr1QVttkUyF2PEmolEkvDo; _pk_ref.1.5bc1=["","",1652718344,"https://www.google.com/"]; _pk_ses.1.5bc1=1'})
+                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'})
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                              logging.debug("Connection timeout")
                             
@@ -619,9 +618,9 @@ def main() -> None:
     """
     Program runner
     """
-    logging.basicConfig(level=logging.DEBUG)
+    #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    # logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False
