@@ -7,7 +7,6 @@ Simple JSON scraper for Kemono.party discord content.
 from doctest import SKIP
 from cfscrape import CloudflareScraper
 import logging
-import json
 import requests.adapters
 
 

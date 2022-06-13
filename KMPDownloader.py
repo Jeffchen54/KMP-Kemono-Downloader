@@ -1,7 +1,9 @@
 import shutil
+import string
 from tempfile import tempdir
 import tempfile
 from threading import Lock
+from numpy import full
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -14,7 +16,10 @@ import logging
 import patoolib
 from patoolib import util
 import requests.adapters
+import json
+import io
 
+from DiscordtoJson import DiscordToJson
 from HashTable import HashTable
 from HashTable import KVPair
 from datetime import timedelta
@@ -23,12 +28,20 @@ from Threadpool import ThreadPool
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Automatic connection retry when connection is lost with Kemono server
+- Significantly improved cases where multiple zip files unzip to the exact same destination, creates second
+    directory instead of overwritting existing files
+- Fix file_text.txt issue where random numbers are scraped up
+- Emoji support added
+- Fixed case where post__content.txt was created even though work does not contain any post content
+- No longer downloads patreon url file links in downloads segment
+- Adjust numbering algorithm to prevent overwriting, note that bad img links will not be downloaded, leaving gaps in the naming
+- Fixed bug where post comments not downloaded if downloading of images occurred
 @author Jeff Chen
 @version 0.4.2
 @last modified 6/11/2022
 """
 
+counter = 0
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -97,7 +110,13 @@ class KMP:
         self.__session = cfscrape.create_scraper(requests.Session())
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
-        
+
+    def reset(self):
+        """
+        Resets register and download count
+        """
+        self. __register = HashTable(10)
+        self.__fcount = 0
     def close(self):
         """
         Closes KMP download session, cannot be reopened 
@@ -109,7 +128,7 @@ class KMP:
         Downloads file at src. Skips duplicate files
         Param:
             src: src of image to download
-            fname: what to name the file to download
+            fname: what to name the file to download, with extensions
         """
         logging.debug("Downloading " + fname + " from " + src)
         r = None
@@ -117,14 +136,22 @@ class KMP:
             try:
                 # Get download size
                 r = self.__session.request('HEAD', src, timeout=5)
+
+                if r.status_code >= 400:
+                    logging.critical("Link provided cannot be downloaded from, possibly a dead third party link: " + src)
+                    return
+
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 logging.debug("Connection request unanswered, retrying")
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
         f = fname.split('/')[len(fname.split('/')) - 1]
-        # Download file, skip duplicate files
-        
-        if not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
+        # If file cannot be downloaded, it is most likely an invalid file
+        if fullsize == None:
+            logging.critical("Download was attempted on an undownloadable file, details described")
+            logging.critical("src: " + src + "\npath: " + fname)
+        # Download and skip duplicate file
+        elif not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
             done = False
             while(not done):
                 try:
@@ -167,9 +194,9 @@ class KMP:
 
 
 
-        # Unzip file if specified
-        if self.__unzip and self.__supported_zip_type(fname):
-            self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
+            # Unzip file if specified
+            if self.__unzip and self.__supported_zip_type(fname):
+                self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
 
     def __supported_zip_type(self, fname:str) -> bool:
         """
@@ -201,7 +228,37 @@ class KMP:
 
                 for f in os.listdir(dirpath):
                     if os.path.isdir(os.path.abspath(dirpath + "/" + f)):
-                        shutil.copytree(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f), dirs_exist_ok=True)
+                        downloaded = False
+                        destpath += '/'
+                        while not downloaded:
+                            try:
+                                shutil.copytree(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + f), dirs_exist_ok=False)
+                                downloaded = True
+                            except FileExistsError as e:
+                                # If duplicate file/dir is found, it will be stashed in the same dir but with (n) prepended 
+                                counter = 1
+                                nextName = e.filename
+                                currSz = self.__getDirSz(os.path.abspath(dirpath + "/" + f))
+                                # Check directory size of dirpath vs destpath, if same size, we are done
+                                done = False
+                                while(not done):
+                                    # If the next directory does not exists, change destpath to that directory
+                                    if not os.path.exists(nextName):
+                                        destpath = nextName
+                                        done = True
+                                    else:
+                                        # If directory with same size is found, we are done
+                                        dirsize = self.__getDirSz(nextName)
+                                        if dirsize == currSz:
+                                            done = True
+                                            downloaded = True
+                                    
+                                    # Adjust path for next iteration
+                                    if not done:
+                                        nextName = destpath + '(' + str(counter) + ')'
+                                        counter += 1
+
+                                # Move files from dupe directory to new directory
                         shutil.rmtree(os.path.abspath(dirpath + "/" + f), ignore_errors=True)
                     else:
                         shutil.copy(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f))
@@ -215,6 +272,23 @@ class KMP:
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
                             "File size: " + str(os.stat(zippath).st_size))
+
+
+
+    def __getDirSz(self, dir: str) -> int:
+        """
+        Returns directory and its content size
+
+        Return directory and its content size
+        """
+        size = 0
+        for dirpath, dirname, filenames in os.walk(dir):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                # skip if it is symbolic link
+                if not os.path.islink(fp):
+                    size += os.path.getsize(fp)
+        return size
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -249,7 +323,7 @@ class KMP:
 
         case1 = fname.rpartition('=')[2]
         # Case 2, bad extension provided
-        if len(case1.rpartition('.')[2]) > 10:
+        if len(case1.rpartition('.')[2]) > 6:
             first = fname.rpartition('?')[0]
             return first.rpartition('/')[2]
         
@@ -268,8 +342,8 @@ class KMP:
         """
         if not self.__threads.get_status():
             raise DeadThreadPoolException
-
-        counter = 0
+        
+        global counter
         for link in imgLinks:
             href = link.get('href')
             # Type 1 image - Image in Files section
@@ -293,6 +367,17 @@ class KMP:
             if src:
                 logging.debug("Extracted content link: " + src)
                 fname = dir + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
+
+                # Check if the post attachment shares the same name as another post attachemnt
+                # Adjust filename if found
+                value = self.__register.hashtable_lookup_value(fname)
+                if value != None:  # If register, update titleDir and increment value
+                    self.__register.hashtable_edit_value(fname, value + 1)
+                    split = fname.partition('.')
+                    fname = split[0] + "(" + str(value) + ")." + split[2]
+                else:   # If not registered, add to register at value 1
+                    self.__register.hashtable_add(KVPair[str, int](fname, 1))
+                
                 self.__threads.enqueue((self.__download_file, (src, fname)))
                 counter += 1
 
@@ -319,16 +404,17 @@ class KMP:
             if frontOffset > 0:
                 frontOffset -= 1
             elif(endOffset < listSz - currOffset):
-                strBuilder.append(txtlink.text.strip() + '\n')
-                strBuilder.append(txtlink.get('href') + '\n')
-                strBuilder.append("____________________________________________________________\n")
+                text = txtlink.get('href').strip()
+                if not text.isnumeric():
+                    strBuilder.append(txtlink.text.strip() + '\n')
+                    strBuilder.append(text + '\n')
+                    strBuilder.append("____________________________________________________________\n")
             currOffset += 1
         
         # Write to file if data exists
         if len(strBuilder) > 0:
-            with open(dir, 'w') as fd:
-                for line in strBuilder:
-                    fd.write(line)
+            self.__write_utf8("".join(strBuilder), dir)
+
 
             
 
@@ -403,13 +489,15 @@ class KMP:
             if(os.path.exists(titleDir + "post__content.txt")):
                 logging.debug("Skipping duplicate post_content download")
             else:
-                # Text section
-                with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
-                    fd.write(content.getText(separator='\n', strip=True))
-                    links = content.find_all("a")
-                    for link in links:
-                        url = link.get('href')
-                        fd.write("\n" + url)
+                text = content.getText(separator='\n', strip=True)
+                if len(text) > 0:
+                    # Text section
+                    with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
+                        fd.write(text)
+                        links = content.find_all("a")
+                        for link in links:
+                            hr = link.get('href')
+                            fd.write("\n" + hr)
                 
             # Image Section
             self.__download_all_files(content.find_all('img'), titleDir)
@@ -419,21 +507,25 @@ class KMP:
         if attachments:
             for attachment in attachments:
                 download = attachment.get('href')
-                src = self.__CONTAINER_PREFIX + download
-                fname = os.path.join(titleDir, self.__trim_fname(attachment.text.strip()))
+                # Confirm that attachment not from patreon 
+                if 'patreon' not in download:
+                    src = self.__CONTAINER_PREFIX + download
+                    fname = os.path.join(titleDir, self.__trim_fname(attachment.text.strip()))
+                    
+                    # Check if the post attachment shares the same name as another post attachemnt
+                    # Adjust filename if found
+                    value = self.__register.hashtable_lookup_value(fname)
+                    if value != None:  # If register, update titleDir and increment value
+                        self.__register.hashtable_edit_value(fname, value + 1)
+                        split = fname.partition('.')
+                        fname = split[0] + "(" + str(value) + ")." + split[2]
+                    else:   # If not registered, add to register at value 1
+                        self.__register.hashtable_add(KVPair[str, int](fname, 1))
 
-                # Check if the post attachment shares the same name as another post attachemnt
-                # Adjust filename if found
-                value = self.__register.hashtable_lookup_value(fname)
-                if value != None:  # If register, update titleDir and increment value
-                    self.__register.hashtable_edit_value(fname, value + 1)
-                    split = fname.partition('.')
-                    fname = split[0] + "(" + str(value) + ")." + split[2]
-                else:   # If not registered, add to register at value 1
-                    self.__register.hashtable_add(KVPair[str, int](fname, 1))
-
-                self.__threads.enqueue((self.__download_file, (src, fname)))
-
+                    self.__threads.enqueue((self.__download_file, (src, fname)))
+        
+        global counter
+        counter = 0
 
         # Download post comments ################################################
         if(os.path.exists(titleDir + "post__comments.txt")):
@@ -442,10 +534,9 @@ class KMP:
             comments = soup.find("div", class_="post__comments")
             if comments and len(comments.getText(strip=True)) > 0:
                 text = comments.getText(separator='\n', strip=True)
-                if(text and text != "No comments found for this post."):
-                    with open(titleDir + "post__comments.txt", "w", encoding="utf-8") as fd:
-                        fd.write(comments.getText(separator='\n', strip=True))
-
+                if(text and text != "No comments found for this post." and len(text) > 0):
+                    self.__write_utf8(comments.getText(separator='\n', strip=True), titleDir + "post__comments.txt")
+                   
     def __process_window(self, url: str, continuous: bool) -> None:
         """
         Processes a single main artist window
@@ -496,12 +587,131 @@ class KMP:
             else:
                 contLinks = None
 
+    def __write_utf8(self, text:str, path:str) -> None:
+        """
+        Writes utf-8 text to a file at path
+
+        Param:
+            text: text to write
+            path: where file to write to is located including file name
+        """
+        with io.open(path, 'w',  encoding='utf-8') as fd:
+            fd.write(text)
+
+    def __download_discord_js(self, jsList:dict, titleDir:str, text_file:str) -> None:
+        """
+        Writes json in js to a text file and downloads any files found in js
+
+        Param:
+            jsList: Kemono discord server json to download
+            titleDir: Where to save data
+            text_file: name of file to write to, name only, written in titleDir directory
+        Pre: text_file does not have data from previous runs. Data is appended so old data
+                will persist.
+        Pre: titleDir exists
+        """
+        imageDir = titleDir + "images/"
+        textPath = titleDir + text_file
+
+        # make dir
+        if not os.path.isdir(imageDir):
+            os.mkdir(imageDir)
+        
+        stringBuilder = []
+        # Process each json individually
+        for js in reversed(jsList):
+            # Add buffer
+            stringBuilder.append('_____________________________________________________\n')
+
+            # Process name 
+            stringBuilder.append(js.get('author').get('username'))
+            stringBuilder.append('\t')
+
+            # Process date
+            stringBuilder.append(js.get('published'))
+            stringBuilder.append('\n')
+
+            # Process content
+            stringBuilder.append(js.get('content'))
+            stringBuilder.append('\n')
+
+            # Process embeds
+            for e in js.get('embeds'):
+                stringBuilder.append(js.get('title') + " -> " + js.get('url') + '\n')
+
+            count = 0
+            # Add attachments
+            for i in js.get('attachments'):
+                url = self.__CONTAINER_PREFIX + i.get('path')
+                stringBuilder.append(url + '\n\n')
+                self.__threads.enqueue((self.__download_file, (imageDir, str(count))))
+                count += 1
+
+        # Write to file
+        self.__write_utf8(''.join(stringBuilder), textPath)
+
+    def __process_discord_server(self, serverJs:dict, titleDir:str) -> None:
+        """
+        Process a discord server
+
+        Param:
+            serverJS: discord server json token, in format {"id":xxx,"name":xxx}
+            titleDir: Where to store discord content
+        """
+        dir = titleDir + serverJs.get('name') + '/'
+        text_file = "discord__content.txt"
+
+        # makedir
+        if not os.path.isdir(dir):
+            os.mkdir(dir)
+
+        # clear data
+        elif os.path.exists(dir + text_file):
+            os.remove(dir + text_file)
+        
+        # Read every json on the server and put it into queue
+        discordScraper = DiscordToJson()
+
+        js = discordScraper.discord_channel_lookup(serverJs.get("id"), self.__session)
+        while len(js) > 0:
+            self.__download_discord_js(js, dir, 'discord__content.txt')
+            js = discordScraper.discord_channel_lookup(None, self.__session)
+
+
+    def __process_discord(self, url:str, titleDir:str) -> None:
+        """ 
+        Process discord kemono links using multithreading
+
+        Param:
+            url: discord url
+            titleDir: directory to store discord content
+        """
+        discordScraper = DiscordToJson()
+        discordID = url.rpartition('/')[2]
+        dir = titleDir + discordID + '/'
+
+        # Makedir
+        if not os.path.isdir(dir):
+            os.makedirs(dir)
+
+        # Get server ID(s)
+        servers = discordScraper.discord_lookup(url.rpartition('/')[2], self.__session)
+        
+        if len(servers) == 0:
+            return
+        
+        # Process each server
+        for s in servers:
+            # Process server
+            self.__process_discord_server(s, dir)
+
     def __call_and_interpret_url(self, url: str) -> None:
         """
         Calls a function based on url type
         https://kemono.party/fanbox/user/xxxx -> process_window()
         https://kemono.party/fanbox/user/xxxx?o=xx -> process_window() one page only
         https://kemono.party/fanbox/user/xxxx/post/xxxx -> process_container()
+        https://kemono.party/discord/server/xxxx -> process_discord()
 
         Anything else -> UnknownURLTypeException
 
@@ -529,9 +739,13 @@ class KMP:
             if not os.path.isdir(titleDir):
                 os.makedirs(titleDir)
             reqs.close()
-
             # Process container
             self.__process_container(url, titleDir)
+
+        elif 'discord' in url:
+            self.__process_discord(url, titleDir)
+
+
         elif 'user' in url:
             self.__process_window(url, True)
         else:
