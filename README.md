@@ -11,7 +11,7 @@ and will not be skipped on duplication checks.
 
 ## Current Features
 View changelog for more details on features not included here.
-- All services supported except Discord (Patreon, Pixiv Fanbox, Gumroad, SubscribeStar, DLSite, Fantia).
+- All services supported (Patreon, Pixiv Fanbox, Gumroad, SubscribeStar, DLSite, Fantia, Discord).
 - Can download a single artist work, all artist works, or a single page of artist works.
 - Download all files and any downloads in high resolution and correct extension.
 - Automatic file unzipping for .7z, .zip, and .rar files. 
