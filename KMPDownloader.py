@@ -138,7 +138,7 @@ class KMP:
                 r = self.__session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
-                    logging.critical("Link provided cannot be downloaded from, possibly a dead third party link: " + src)
+                    logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, possibly a dead third party link: " + src)
                     return
 
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):

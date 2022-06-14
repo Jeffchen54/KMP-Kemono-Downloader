@@ -451,37 +451,10 @@ ____________________________________________________________\n\
         self.KMP = KMP(self.tempdir, unzip=True, tcount=2, chunksz=None)
         self.KMP.routine("https://kemono.party/patreon/user/5489259/post/16278266")
 
-        self.assertTrue(os.path.exists("misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/0.jpg"))
-        self.assertTrue(os.path.exists("misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/1.jpg"))
-        self.assertFalse(os.path.exists("misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/2.jpg"))
-        self.assertTrue(os.path.exists("misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/3.jpg"))
-
-    def test_download_different_services(self):
-        """
-        Tests downloading of difference services. Downloads single work 
-        only since some services feature only NSFW artists with some safe works 
-
-        """
-
-        # Fantia
-        # https://kemono.party/fantia/user/5755/post/777242
-
-        # Discord <UNSUPPORTED>
-
-        # DLSite
-        # https://kemono.party/dlsite/user/RG44418/post/RE276179
-
-        # SubscribeStar
-        # https://kemono.party/subscribestar/user/furronika/post/470586
-
-        # Gumroad
-        # https://kemono.party/gumroad/user/2180412408086/post/nskyv
-
-        # Fanbox
-        # https://kemono.party/fanbox/user/49260/post/1564117
-
-        # Patreon
-        # https://kemono.party/patreon/user/16097004/post/48090388
+        self.assertTrue(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/0.jpg"))
+        self.assertTrue(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/1.jpg"))
+        self.assertFalse(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/2.jpg"))
+        self.assertTrue(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/3.jpg"))
 
     def test_post_content(self) -> None:
         """
@@ -563,6 +536,33 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
             self.assertTrue(os.path.exists(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/0.jpg")))
             self.assertTrue(os.path.exists(os.path.join(self.tempdir, "misswarmj/My First NSFW ASMR Video Preview  by misswarmj from Patreon  Kemono/1.jpg")))
             self.KMP.close()
+
+    def test_discord(self):
+        """
+        Tests downloading discord content
+        """
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=12, chunksz=None)
+        self.KMP.routine("https://kemono.party/discord/server/634594002624184360")
+
+        # 100
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/100円_100yen/discord__content.txt")).st_size, 10039)
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/100円_100yen/images")), 75556767)
+
+        # 100(1)
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/100円_100yen(1)/discord__content.txt")).st_size, 528)
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/100円_100yen(1)/images")), 0)
+        
+        # 300 
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/300ビール_beer/discord__content.txt")).st_size, 30561)
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/300ビール_beer/images")), 277344917)
+
+        # 300
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/300ビール_beer(1)/discord__content.txt")).st_size, 4011)
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/300ビール_beer(1)/images")), 8197562)
+
+        # wip
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/作業中_wip/discord__content.txt")).st_size, 202136)
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/作業中_wip/images")), 487333680)
 
     def getDirSz(self, dir: str) -> int:
         """
