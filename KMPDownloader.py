@@ -1,8 +1,6 @@
 import shutil
-from tempfile import tempdir
 import tempfile
 from threading import Lock
-from numpy import full
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -15,7 +13,6 @@ import logging
 import patoolib
 from patoolib import util
 import requests.adapters
-import json
 import io
 
 from DiscordtoJson import DiscordToJson
@@ -856,9 +853,9 @@ def main() -> None:
     """
     Program runner
     """
-    #logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO)
+    #logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False
