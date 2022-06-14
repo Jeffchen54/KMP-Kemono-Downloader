@@ -105,7 +105,7 @@ class KMP:
 
         # Create session ###########################
         self.__session = cfscrape.create_scraper(requests.Session())
-        adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=100, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
 
     def reset(self):

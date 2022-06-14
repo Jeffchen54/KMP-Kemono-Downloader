@@ -22,7 +22,7 @@ class KMPTestCase(unittest.TestCase):
         """
         Sets up an Null KMP since tests require different paramaters
         """
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.INFO)
         self.KMP = None
 
     @classmethod
@@ -402,8 +402,8 @@ ____________________________________________________________\n\
             r"nbit/Basic 2022年 03月 by nbit from Pixiv Fanbox  Kemono/cap"))
         size2 = self.getDirSz(self.tempdir + (
         r"nbit/Basic 2022年 03月 by nbit from Pixiv Fanbox  Kemono/(1)cap"))
-        self.assertEqual(size, 63149843)
-        self.assertEqual(size2, 103350378)
+        self.assertTrue(size ==  63149843 or size == 103350378)
+        self.assertTrue(size2 == 63149843 or size2 == 103350378)
         second.close()
     
     def test_duplicate_file(self):
@@ -426,6 +426,7 @@ ____________________________________________________________\n\
 
         # Confirm size is unchanged
         self.assertEqual(self.getDirSz(self.tempdir + (r"Belko")), size)
+        self.KMP.close()
 
     def test_download_dead_image(self):
         """
@@ -433,6 +434,7 @@ ____________________________________________________________\n\
         """
         self.KMP = KMP(self.tempdir, unzip=True, tcount=2, chunksz=None)
         self.KMP.routine("https://kemono.party/patreon/user/5489259/post/22660508")
+        self.KMP.close()
         # If it does not crash, it passes
     
     def test_download_link_not_file(self):
@@ -441,7 +443,8 @@ ____________________________________________________________\n\
         of files, should be skipped
         """
         self.KMP = KMP(self.tempdir, unzip=True, tcount=2, chunksz=None)
-        self.KMP.routine("https://kemono.party/patreon/user/5489259/post/29891980")        
+        self.KMP.routine("https://kemono.party/patreon/user/5489259/post/29891980")  
+        self.KMP.close()      
         # If it does not crash, it passes
 
     def test_download_non_image_img(self):
@@ -455,6 +458,7 @@ ____________________________________________________________\n\
         self.assertTrue(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/1.jpg"))
         self.assertFalse(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/2.jpg"))
         self.assertTrue(os.path.exists(self.tempdir + "misswarmj/New Feet lover post on Twitter by misswarmj from Patreon  Kemono/3.jpg"))
+        self.KMP.close()
 
     def test_post_content(self) -> None:
         """
@@ -563,6 +567,8 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         # wip
         self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/作業中_wip/discord__content.txt")).st_size, 202136)
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/作業中_wip/images")), 487333680)
+
+        self.KMP.close()
 
     def getDirSz(self, dir: str) -> int:
         """
