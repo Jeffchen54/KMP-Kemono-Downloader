@@ -166,9 +166,6 @@ class ThreadPool():
         self.__kill[0] = True
 
         # Wake up all sleeping threads
-
-        #to_release = 0 if self.__num_tasks.get_nowait(
-        #) - self.__tcount >= 0 else self.__tcount - self.__num_tasks.get_nowait()
         
         # number of threads tasks are released because there may be tasks left over after threads are killed
         to_release = self.__tcount
@@ -216,7 +213,6 @@ class ThreadPool():
         logging.debug("Blocking until all tasks are complete")
         with self.__all_tasks_done:
             while self.__num_tasks.get() > 0:
-                self.__tasks.release()
                 self.__all_tasks_done.wait()
 
     def get_qsize(self) -> int:
@@ -225,7 +221,7 @@ class ThreadPool():
 
         Return: task queue size
         """
-        return self.__num_tasks.get()
+        return self.__num_tasks.get_nowait()
 
     def get_status(self) -> bool:
         """
@@ -280,7 +276,6 @@ class ThreadPool():
             while True:
                 # Wait until download is available ############
                 self.__tasks.acquire()
-
                 # Check kill signal ###########################
                 if self.__kill_switch[0]:
                     logging.debug(
@@ -302,20 +297,23 @@ class ThreadPool():
                         task = self.__task_queue[curr].pop()
                     curr += 1
                 
-                # If there are no tasks remaining, thread will broadcast this 
-                if not task: 
-                    logging.info("No task acquired, waking up waiting threads")
-                    self.__queue_mutex.release()
-
-                    with self.__all_tasks_done:
-                        self.__all_tasks_done.notify_all()
-                    return
-
                 # Release queue mutex as we are done with queues
                 self.__queue_mutex.release()
-                self.__num_tasks.decrement()
 
+                # Should not happen!
+                if not task: 
+                    logging.critical("No tasks when tasks remaining is not 0, this should not happen!!!")
+                    return
+               
                 # Process the task ############################
                 logging.debug("Thread #" + str(thread_id.id) +
                               " Processing: " + str(task))
                 task[0](*task[1])
+                self.__num_tasks.decrement()
+
+                # If there are no tasks remaining, thread will broadcast this 
+                if  self.__num_tasks.get() == 0: 
+                    logging.debug("No tasks left, waking up waiting threads")
+                    self.__all_tasks_done.acquire()
+                    self.__all_tasks_done.notify_all()
+                    self.__all_tasks_done.release()
