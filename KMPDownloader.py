@@ -1,5 +1,4 @@
 import shutil
-import string
 from tempfile import tempdir
 import tempfile
 from threading import Lock
@@ -36,8 +35,9 @@ Using multithreading
 - No longer downloads patreon url file links in downloads segment
 - Adjust numbering algorithm to prevent overwriting, note that bad img links will not be downloaded, leaving gaps in the naming
 - Fixed bug where post comments not downloaded if downloading of images occurred
+- Limited discord functionality added, downloads every image, and all text. Hyperlinks are recorded as well
 @author Jeff Chen
-@version 0.4.2
+@version 0.5
 @last modified 6/11/2022
 """
 
@@ -413,7 +413,7 @@ class KMP:
         
         # Write to file if data exists
         if len(strBuilder) > 0:
-            self.__write_utf8("".join(strBuilder), dir)
+            self.__write_utf8("".join(strBuilder), dir, 'w')
 
 
             
@@ -535,7 +535,7 @@ class KMP:
             if comments and len(comments.getText(strip=True)) > 0:
                 text = comments.getText(separator='\n', strip=True)
                 if(text and text != "No comments found for this post." and len(text) > 0):
-                    self.__write_utf8(comments.getText(separator='\n', strip=True), titleDir + "post__comments.txt")
+                    self.__write_utf8(comments.getText(separator='\n', strip=True), titleDir + "post__comments.txt", 'w')
                    
     def __process_window(self, url: str, continuous: bool) -> None:
         """
@@ -587,37 +587,38 @@ class KMP:
             else:
                 contLinks = None
 
-    def __write_utf8(self, text:str, path:str) -> None:
+    def __write_utf8(self, text:str, path:str, mode:str) -> None:
         """
         Writes utf-8 text to a file at path
 
         Param:
             text: text to write
             path: where file to write to is located including file name
+            mode: mode to set FIle IO
         """
-        with io.open(path, 'w',  encoding='utf-8') as fd:
+        with io.open(path, mode=mode,  encoding='utf-8') as fd:
             fd.write(text)
 
-    def __download_discord_js(self, jsList:dict, titleDir:str, text_file:str) -> None:
+    def __download_discord_js(self, jsList:dict, titleDir:str) -> list[str]:
         """
-        Writes json in js to a text file and downloads any files found in js
+        Downloads any file found in js and returns text data
 
         Param:
             jsList: Kemono discord server json to download
             titleDir: Where to save data
-            text_file: name of file to write to, name only, written in titleDir directory
         Pre: text_file does not have data from previous runs. Data is appended so old data
                 will persist.
         Pre: titleDir exists
+        Return: Buffer containing text data
         """
         imageDir = titleDir + "images/"
-        textPath = titleDir + text_file
 
         # make dir
         if not os.path.isdir(imageDir):
             os.mkdir(imageDir)
         
         stringBuilder = []
+        global counter
         # Process each json individually
         for js in reversed(jsList):
             # Add buffer
@@ -637,18 +638,29 @@ class KMP:
 
             # Process embeds
             for e in js.get('embeds'):
-                stringBuilder.append(js.get('title') + " -> " + js.get('url') + '\n')
+                logging.info("Details " + json.dumps(e))
 
-            count = 0
+                if e.get('type') == "link":
+                    stringBuilder.append(e.get('title') + " -> " + e.get('url') + '\n')
+
+
             # Add attachments
             for i in js.get('attachments'):
                 url = self.__CONTAINER_PREFIX + i.get('path')
                 stringBuilder.append(url + '\n\n')
-                self.__threads.enqueue((self.__download_file, (imageDir, str(count))))
-                count += 1
+                
+                # Check if the attachment is dupe
+                value = self.__register.hashtable_lookup_value(url)
+                if value == None:   # If not registered, add to register at value 1
+                    self.__register.hashtable_add(KVPair[str, int](url, 1))
+                
+                    # Download the attachment
+                    self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
+                    counter += 1
+                # If is on the register, do not download the attachment
 
         # Write to file
-        self.__write_utf8(''.join(stringBuilder), textPath)
+        return stringBuilder
 
     def __process_discord_server(self, serverJs:dict, titleDir:str) -> None:
         """
@@ -659,8 +671,16 @@ class KMP:
             titleDir: Where to store discord content
         """
         dir = titleDir + serverJs.get('name') + '/'
-        text_file = "discord__content.txt"
 
+        # Make sure a dupe directory does not exists, if so, adjust dir name
+        value = self.__register.hashtable_lookup_value(dir)
+        if value != None:  # If register, update titleDir and increment value
+            self.__register.hashtable_edit_value(dir, value + 1)
+            dir = dir[0:len(dir) - 1] + "(" + str(value) + ")/"
+        else:   # If not registered, add to register at value 1
+            self.__register.hashtable_add(KVPair[str, int](dir, 1))
+
+        text_file = "discord__content.txt"
         # makedir
         if not os.path.isdir(dir):
             os.mkdir(dir)
@@ -673,9 +693,15 @@ class KMP:
         discordScraper = DiscordToJson()
 
         js = discordScraper.discord_channel_lookup(serverJs.get("id"), self.__session)
+        buffer = []
         while len(js) > 0:
-            self.__download_discord_js(js, dir, 'discord__content.txt')
+            buffer.insert(0, "".join(self.__download_discord_js(js, dir)))
             js = discordScraper.discord_channel_lookup(None, self.__session)
+        
+        # Write buffered discord text content to file
+        self.__write_utf8("".join(buffer), dir + 'discord__content.txt', 'a')
+        global counter
+        counter = 0
 
 
     def __process_discord(self, url:str, titleDir:str) -> None:
@@ -687,8 +713,7 @@ class KMP:
             titleDir: directory to store discord content
         """
         discordScraper = DiscordToJson()
-        discordID = url.rpartition('/')[2]
-        dir = titleDir + discordID + '/'
+        dir = titleDir
 
         # Makedir
         if not os.path.isdir(dir):
@@ -743,7 +768,7 @@ class KMP:
             self.__process_container(url, titleDir)
 
         elif 'discord' in url:
-            self.__process_discord(url, titleDir)
+            self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "/")
 
 
         elif 'user' in url:
