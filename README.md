@@ -103,6 +103,16 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
   directory can be found here: http://sales.commence.com/commencekb/Article.aspx?id=10068. Adjust the temp path directory to be shorter or you can extract
   the file manually.
   
+  ### File does not exists:
+    CRITICAL:root:(404)Link provided cannot be downloaded from, possibly a dead third party link: https://kemono.party/attachments/discord/634594002624184360/634659046678593536/772072375331717131/-10.png
+    
+File could not be downloaded due to HTML error. Can be caused by many cases. In this example, the file provided by Kemono's API does not exists and was probably deleted. Other websites 
+  
+ ### Specific Discord Issues:
+- Images are downloaded backwards, this cannot be fixed easily due to how Kemono's Discord API functions
+- Not all images are downloaded. This is because several images may be duplicate images pointing to the same url. Duplicate url images are automatically trimmed out.
+- Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
+    
 ## Known bugs:
 - post_content.txt may contain garbage data at times
 
@@ -110,6 +120,18 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 These bugs were accounted for but not enough testing has been conducted
   
 None
+    
+ ## Changelog 0.5
+- Significantly improved cases where multiple zip files unzip to the exact same destination, creates second directory instead of
+overwritting existing files
+- Fix file_text.txt issue where random numbers are scraped up
+- Emoji support added
+- Fixed case where post__content.txt was created even though work does not contain any post content
+- No longer downloads patreon url file links in downloads segment
+- Adjust numbering algorithm to prevent overwriting, note that bad img links will not be downloaded, leaving gaps in the naming
+- Fixed bug where post comments not downloaded if downloading of images occurred
+- Limited discord functionality added, downloads every image, and all text. Hyperlinks are recorded as well
+    
  ## Changelog 0.4.2
   - Added connectivity protocol where program will attempt to reconnect forever until a connection is made
     
@@ -120,6 +142,7 @@ None
   - Patch cases where Fanbox works have polluted links which cause errors if download is attempted on them
   - Patch case where an artist work has multiple zip files containing the same directory
   - Fixed bug where file name was not being trimmed enough
+    
  ## Changelog 0.4
   - Post comments are now downloadable
   - Reports program running time
