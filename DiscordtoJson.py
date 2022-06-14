@@ -85,7 +85,6 @@ class DiscordToJson():
         
         # Grab data
         data = None
-        logging.info(channelID)
         url = DISCORD_CHANNEL_CONTENT_PRE_API + channelID + DISCORD_CHANNEL_CONTENT_SUF_API + str(skip)
         while not data:
             try:

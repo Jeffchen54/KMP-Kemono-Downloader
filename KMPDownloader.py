@@ -638,7 +638,6 @@ class KMP:
 
             # Process embeds
             for e in js.get('embeds'):
-                logging.info("Details " + json.dumps(e))
 
                 if e.get('type') == "link":
                     stringBuilder.append(e.get('title') + " -> " + e.get('url') + '\n')
