@@ -1,8 +1,4 @@
-import shutil
-from tempfile import tempdir
-import tempfile
 from threading import Lock
-from numpy import full
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -12,32 +8,23 @@ import sys
 import cfscrape
 from tqdm import tqdm
 import logging
-import patoolib
-from patoolib import util
 import requests.adapters
-import json
-import io
 
+import jutils
 from DiscordtoJson import DiscordToJson
 from HashTable import HashTable
 from HashTable import KVPair
 from datetime import timedelta
 from Threadpool import ThreadPool
+import zipextracter
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Significantly improved cases where multiple zip files unzip to the exact same destination, creates second
-    directory instead of overwritting existing files
-- Fix file_text.txt issue where random numbers are scraped up
-- Emoji support added
-- Fixed case where post__content.txt was created even though work does not contain any post content
-- No longer downloads patreon url file links in downloads segment
-- Adjust numbering algorithm to prevent overwriting, note that bad img links will not be downloaded, leaving gaps in the naming
-- Fixed bug where post comments not downloaded if downloading of images occurred
-- Limited discord functionality added, downloads every image, and all text. Hyperlinks are recorded as well
+- Vastly improved code organization
+- Fixed possible bug where file download count not accurate if file was not downloaded entirely
 @author Jeff Chen
-@version 0.5
+@version 0.5.1
 @last modified 6/11/2022
 """
 
@@ -113,28 +100,33 @@ class KMP:
 
     def reset(self):
         """
-        Resets register and download count
+        Resets register and download count, should be called if the KMP
+        object will be reused
         """
         self. __register = HashTable(10)
         self.__fcount = 0
+
+
     def close(self):
         """
-        Closes KMP download session, cannot be reopened 
+        Closes KMP download session, cannot be reopened, must be called to prevent
+        unclosed socket warnings
         """
         self.__session.close()
 
     def __download_file(self, src: str, fname: str) -> None:
         """
-        Downloads file at src. Skips duplicate files
+        Downloads file at src. Skips if a file already exists sharing the same fname and size 
         Param:
             src: src of image to download
-            fname: what to name the file to download, with extensions
+            fname: what to name the file to download, with extensions. absolute path including 
+                    file names
         """
         logging.debug("Downloading " + fname + " from " + src)
         r = None
+        # Grabbing content length 
         while not r:
             try:
-                # Get download size
                 r = self.__session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
@@ -146,16 +138,18 @@ class KMP:
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
         f = fname.split('/')[len(fname.split('/')) - 1]
+
         # If file cannot be downloaded, it is most likely an invalid file
         if fullsize == None:
             logging.critical("Download was attempted on an undownloadable file, details described")
             logging.critical("src: " + src + "\npath: " + fname)
+        
         # Download and skip duplicate file
         elif not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
             done = False
             while(not done):
                 try:
-                    # Download file to memory
+                    # Get the session
                     data = None
                     while not data:
                         try:
@@ -163,7 +157,7 @@ class KMP:
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                              logging.debug("Connection timeout")
                             
-                    # Download the file
+                    # Download the file with visual bars 
                     with open(fname, 'wb') as fd, tqdm(
                             desc=fname,
                             total=int(fullsize),
@@ -180,12 +174,14 @@ class KMP:
                         time.sleep(1)
                         bar.clear()
 
-                    self.__fcount_mutex.acquire()
-                    self.__fcount += 1
-                    self.__fcount_mutex.release()
+                    # Checks if the file is correctly downloaded, if so, we are done
                     if(os.stat(fname).st_size == int(fullsize)):
                         done = True
                         logging.debug("Downloaded Size (" + fname + ") -> " + fullsize)
+                        # Increment file download count, file is downloaded at this point
+                        self.__fcount_mutex.acquire()
+                        self.__fcount += 1
+                        self.__fcount_mutex.release()
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 except FileNotFoundError:
@@ -195,113 +191,21 @@ class KMP:
 
 
             # Unzip file if specified
-            if self.__unzip and self.__supported_zip_type(fname):
-                self.__extract_zip(fname, fname.rpartition('/')[0] + '/')
-
-    def __supported_zip_type(self, fname:str) -> bool:
-        """
-        Checks if a file is a zip file (7z, zip, rar)
-
-        Param:
-            fname: zip file name or path
-        Return True if zip file, false if not
-        """
-        extension = fname.rpartition('/')[2]
-
-        return 'zip' in extension or 'rar' in extension or '7z' in extension
-        
-    def __extract_zip(self, zippath: str, destpath: str) -> None:
-        """
-        Extracts a zip file to a destination. Does nothing if file
-        is password protected. Zipfile is deleted if extraction is 
-        successfiul
-
-        Param:
-        unzip: full path to zip file included zip file itself
-        destpath: full path to destination
-        """
-
-        # A tempdir is used to bypass Window's 255 char limit when unzipping files
-        with tempfile.TemporaryDirectory(prefix="temp") as dirpath:
-            try:
-                patoolib.extract_archive(zippath, outdir=dirpath + '/', verbosity=-1, interactive=False)
-
-                for f in os.listdir(dirpath):
-                    if os.path.isdir(os.path.abspath(dirpath + "/" + f)):
-                        downloaded = False
-                        destpath += '/'
-                        while not downloaded:
-                            try:
-                                shutil.copytree(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + f), dirs_exist_ok=False)
-                                downloaded = True
-                            except FileExistsError as e:
-                                # If duplicate file/dir is found, it will be stashed in the same dir but with (n) prepended 
-                                counter = 1
-                                nextName = e.filename
-                                currSz = self.__getDirSz(os.path.abspath(dirpath + "/" + f))
-                                # Check directory size of dirpath vs destpath, if same size, we are done
-                                done = False
-                                while(not done):
-                                    # If the next directory does not exists, change destpath to that directory
-                                    if not os.path.exists(nextName):
-                                        destpath = nextName
-                                        done = True
-                                    else:
-                                        # If directory with same size is found, we are done
-                                        dirsize = self.__getDirSz(nextName)
-                                        if dirsize == currSz:
-                                            done = True
-                                            downloaded = True
-                                    
-                                    # Adjust path for next iteration
-                                    if not done:
-                                        nextName = destpath + '(' + str(counter) + ')'
-                                        counter += 1
-
-                                # Move files from dupe directory to new directory
-                        shutil.rmtree(os.path.abspath(dirpath + "/" + f), ignore_errors=True)
-                    else:
-                        shutil.copy(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f))
-                        os.remove(os.path.abspath(dirpath + "/" + f))
-
-                os.remove(zippath)
-            except util.PatoolError as e:
-                logging.critical("Unzipping a non zip file has occured or character limit for path has been reached or zip is password protected" +
-                                "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
-                logging.critical(e)
-            except RuntimeError:
-                logging.debug("File name: " + zippath + "\n" +
-                            "File size: " + str(os.stat(zippath).st_size))
-
-
-
-    def __getDirSz(self, dir: str) -> int:
-        """
-        Returns directory and its content size
-
-        Return directory and its content size
-        """
-        size = 0
-        for dirpath, dirname, filenames in os.walk(dir):
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                # skip if it is symbolic link
-                if not os.path.islink(fp):
-                    size += os.path.getsize(fp)
-        return size
+            if self.__unzip and zipextracter.supported_zip_type(fname):
+                zipextracter.extract_zip(fname, fname.rpartition('/')[0] + '/')
 
     def __trim_fname(self, fname: str) -> str:
         """
         Trims fname, returns result. Extensions are kept:
         For example
         
-        When extension length of ?... token is <= 10:
+        When ext length of ?fname.ext token is <= 6:
         "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt?f=File.txt"
         -> File.txt
 
         Or
 
-        When extension length of ?... token is > 10:
+        When ext length of ?fname.ext token is > 6:
         "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.jpg?f=File.jpe%3Ftoken-time%3D1570752000..."
         ->2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.jpg
 
@@ -312,7 +216,7 @@ class KMP:
         -> まとめDL用.zip
 
         Param: 
-        fname: file name
+            fname: file name
         Pre: fname follows above convention
         Return: trimmed filename with extension
         """
@@ -330,7 +234,7 @@ class KMP:
         # Case 1, good extension
         return case1
 
-    def __download_all_files(self, imgLinks: ResultSet, dir: str) -> None:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str) -> None:
         """
         Puts all urls in imgLinks into download queue
 
@@ -413,7 +317,7 @@ class KMP:
         
         # Write to file if data exists
         if len(strBuilder) > 0:
-            self.__write_utf8("".join(strBuilder), dir, 'w')
+            jutils.write_utf8("".join(strBuilder), dir, 'w')
 
 
             
@@ -477,7 +381,7 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        self.__download_all_files(imgLinks, titleDir)
+        self.__queue_download_files(imgLinks, titleDir)
 
         # Link type
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + "file__text.txt")
@@ -500,7 +404,7 @@ class KMP:
                             fd.write("\n" + hr)
                 
             # Image Section
-            self.__download_all_files(content.find_all('img'), titleDir)
+            self.__queue_download_files(content.find_all('img'), titleDir)
 
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
@@ -535,17 +439,18 @@ class KMP:
             if comments and len(comments.getText(strip=True)) > 0:
                 text = comments.getText(separator='\n', strip=True)
                 if(text and text != "No comments found for this post." and len(text) > 0):
-                    self.__write_utf8(comments.getText(separator='\n', strip=True), titleDir + "post__comments.txt", 'w')
+                    jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + "post__comments.txt", 'w')
                    
     def __process_window(self, url: str, continuous: bool) -> None:
         """
-        Processes a single main artist window
+        Processes a single main artist window, a window is a page where multiple artist works can be seen
 
         Param: 
             url: url of the main artist window
             continuous: True to attempt to visit next pages of content, False to not 
         """
         reqs = None
+        # Make a connection
         while not reqs:
             try:
                 reqs = self.__session.get(url, timeout=5)
@@ -587,17 +492,6 @@ class KMP:
             else:
                 contLinks = None
 
-    def __write_utf8(self, text:str, path:str, mode:str) -> None:
-        """
-        Writes utf-8 text to a file at path
-
-        Param:
-            text: text to write
-            path: where file to write to is located including file name
-            mode: mode to set FIle IO
-        """
-        with io.open(path, mode=mode,  encoding='utf-8') as fd:
-            fd.write(text)
 
     def __download_discord_js(self, jsList:dict, titleDir:str) -> list[str]:
         """
@@ -667,7 +561,7 @@ class KMP:
 
         Param:
             serverJS: discord server json token, in format {"id":xxx,"name":xxx}
-            titleDir: Where to store discord content
+            titleDir: Where to store discord content, absolute directory ends with '/'
         """
         dir = titleDir + serverJs.get('name') + '/'
 
@@ -688,7 +582,7 @@ class KMP:
         elif os.path.exists(dir + text_file):
             os.remove(dir + text_file)
         
-        # Read every json on the server and put it into queue
+        # Read every json on the server in chunks and put it into queue
         discordScraper = DiscordToJson()
 
         js = discordScraper.discord_channel_lookup(serverJs.get("id"), self.__session)
@@ -698,7 +592,7 @@ class KMP:
             js = discordScraper.discord_channel_lookup(None, self.__session)
         
         # Write buffered discord text content to file
-        self.__write_utf8("".join(buffer), dir + 'discord__content.txt', 'a')
+        jutils.write_utf8("".join(buffer), dir + 'discord__content.txt', 'a')
         global counter
         counter = 0
 
@@ -740,12 +634,14 @@ class KMP:
         Anything else -> UnknownURLTypeException
 
         Param:
-        url: url to process
+            url: url to process
         Raise:
-        UnknownURLTypeException when url type cannot be determined
+            UnknownURLTypeException when url type cannot be determined
         """
+        # For single window page, we can process it directly since we don't have to flip to next pages
         if '?' in url:
             self.__process_window(url, False)
+        # Single artist work requires a directory similar to one if it were a window to be created, once done, it can be processed
         elif "post" in url:
             # Build directory
             reqs = None
@@ -766,13 +662,16 @@ class KMP:
             # Process container
             self.__process_container(url, titleDir)
 
+        # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
             self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "/")
 
-
+        # For multiple window pages
         elif 'user' in url:
             self.__process_window(url, True)
+        # Not found, we complain
         else:
+            logging.critical("Unknown URL -> " + url)
             raise UnknownURLTypeException
 
     def __create_threads(self, count: int) -> ThreadPool:
@@ -789,9 +688,10 @@ class KMP:
 
     def __kill_threads(self, threads: ThreadPool) -> None:
         """
-        Kills all threads in threads. Threads are restarted and killed using a
-        switch, deadlocked or infinitely running threads cannot be killed using
+        Kills all threads in threads. Deadlocked or infinitely running threads cannot be killed using
         this function.
+
+        Threads are killed after the download queue is finished
 
         Param:
         threads: threads to kill
