@@ -6,8 +6,14 @@ import patoolib
 from patoolib import util
 
 import jutils
+"""
+Extracts files using patoolib
 
-def supported_zip_type(self, fname:str) -> bool:
+@author Jeff chen
+@version 6/15/2022
+"""
+
+def supported_zip_type(fname:str) -> bool:
         """
         Checks if a file is a zip file (7z, zip, rar)
 
@@ -19,7 +25,7 @@ def supported_zip_type(self, fname:str) -> bool:
 
         return 'zip' in extension or 'rar' in extension or '7z' in extension
         
-def extract_zip(self, zippath: str, destpath: str, temp:bool) -> None:
+def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
         """
         Extracts a zip file to a destination. Does nothing if file
         is password protected. Zipfile is deleted if extraction is 
@@ -60,7 +66,7 @@ def extract_zip(self, zippath: str, destpath: str, temp:bool) -> None:
                                         done = True
                                     else:
                                         # If directory with same size is found, we are done
-                                        dirsize = self.__getDirSz(nextName)
+                                        dirsize = jutils.getDirSz(nextName)
                                         if dirsize == currSz:
                                             done = True
                                             downloaded = True

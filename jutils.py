@@ -8,7 +8,7 @@ Misc helpful utils, mainly related to File IO
 @version 6/15/2022
 """
 
-def write_utf8(self, text:str, path:str, mode:str) -> None:
+def write_utf8(text:str, path:str, mode:str) -> None:
     """
     Writes utf-8 text to a file at path
 
@@ -20,7 +20,7 @@ def write_utf8(self, text:str, path:str, mode:str) -> None:
     with io.open(path, mode=mode,  encoding='utf-8') as fd:
         fd.write(text)
 
-def getDirSz(self, dir: str) -> int:
+def getDirSz(dir: str) -> int:
     """
     Returns directory and its content size
 

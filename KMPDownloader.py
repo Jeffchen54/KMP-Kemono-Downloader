@@ -23,9 +23,10 @@ Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Vastly improved code organization
 - Fixed possible bug where file download count not accurate if file was not downloaded entirely
+TODO Chunked downloaded reuse chunks
 @author Jeff Chen
 @version 0.5.1
-@last modified 6/11/2022
+@last modified 6/15/2022
 """
 
 counter = 0
@@ -192,7 +193,7 @@ class KMP:
 
             # Unzip file if specified
             if self.__unzip and zipextracter.supported_zip_type(fname):
-                zipextracter.extract_zip(fname, fname.rpartition('/')[0] + '/')
+                zipextracter.extract_zip(fname, fname.rpartition('/')[0] + '/', temp=True)
 
     def __trim_fname(self, fname: str) -> str:
         """
