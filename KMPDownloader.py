@@ -1,6 +1,8 @@
 import shutil
+from tempfile import tempdir
 import tempfile
 from threading import Lock
+from numpy import full
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -13,6 +15,7 @@ import logging
 import patoolib
 from patoolib import util
 import requests.adapters
+import json
 import io
 
 from DiscordtoJson import DiscordToJson
@@ -105,7 +108,7 @@ class KMP:
 
         # Create session ###########################
         self.__session = cfscrape.create_scraper(requests.Session())
-        adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=100, max_retries=0, pool_block=True)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
 
     def reset(self):
@@ -853,9 +856,9 @@ def main() -> None:
     """
     Program runner
     """
-    logging.basicConfig(level=logging.DEBUG)
+    #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    #logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False
