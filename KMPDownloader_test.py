@@ -6,8 +6,10 @@ import os
 from KMPDownloader import DeadThreadPoolException
 import logging
 """
-Tests KMPDownloader.py, tests utilize safe works only
-unless switched off
+Tests KMPDownloader.py,
+##################################################
+WARNING Contains unsafe works!!! #################
+##################################################
 
 Author: Jeff Chen
 Last modified: 6/6/2022
