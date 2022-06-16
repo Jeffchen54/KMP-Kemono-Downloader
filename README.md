@@ -11,12 +11,13 @@ and will not be skipped on duplication checks.
 
 ## Current Features
 View changelog for more details on features not included here.
-- All services supported except Discord (Patreon, Pixiv Fanbox, Gumroad, SubscribeStar, DLSite, Fantia).
+- All services supported (Patreon, Pixiv Fanbox, Gumroad, SubscribeStar, DLSite, Fantia, Discord).
 - Can download a single artist work, all artist works, or a single page of artist works.
 - Download all files and any downloads in high resolution and correct extension.
 - Automatic file unzipping for .7z, .zip, and .rar files. 
 - Extraction of a work's content and comments*.
-- Multhreading support.
+- Queuing system, download multiple URLs without user input
+- Multhreading support, significant download speed bonus.
 
 *Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
 
@@ -112,6 +113,8 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
 - Images are downloaded backwards, this cannot be fixed easily due to how Kemono's Discord API functions
 - Not all images are downloaded. This is because several images may be duplicate images pointing to the same url. Duplicate url images are automatically trimmed out.
 - Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
+    
+*There are solutions to first 2nd bullets, expect them in following updates!
     
 ## Known bugs:
 - post_content.txt may contain garbage data at times

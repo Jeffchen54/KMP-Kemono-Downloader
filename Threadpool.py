@@ -2,7 +2,9 @@ import logging
 import threading
 import queue
 """
-Simple task sharing threadpool. Handles fully generic tasks of any kind
+Simple task sharing threadpool. Handles fully generic tasks of any kind.
+No way to get return values so tasks that returns None are the only functions
+supported!
 
 Author: Jeff Chen
 Last modified: 5/23/2022
