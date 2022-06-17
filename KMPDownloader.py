@@ -23,7 +23,9 @@ Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Vastly improved code organization
 - Fixed possible bug where file download count not accurate if file was not downloaded entirely
-TODO Chunked downloaded reuse chunks
+- Chunked downloaded reuse chunks
+- Added unpacked download mode, each work will not be placed in their own folder and will instead
+    be placed in a main folder
 @author Jeff Chen
 @version 0.5.1
 @last modified 6/15/2022
@@ -60,6 +62,7 @@ class KMP:
     __chunksz: int
     __threads:ThreadPool
     __session:requests.Session
+    __unpacked:bool
 
     # DO NOT EDIT ################################################
     __CONTAINER_PREFIX = "https://kemono.party"
@@ -93,6 +96,8 @@ class KMP:
             self.__chunksz = chunksz
         else:
             self.__chunksz = 1024 * 1024 * 64
+        
+        self.__unpacked = False
 
         # Create session ###########################
         self.__session = cfscrape.create_scraper(requests.Session())
@@ -154,7 +159,9 @@ class KMP:
                     data = None
                     while not data:
                         try:
-                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'})
+                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'Range': 'bytes=' + str(downloaded) + '-' + fullsize})
+                            if(downloaded > 0):
+                                logging.info("Grabbing next bytes -> (" + str(downloaded) + " / " + fullsize + ")")
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                              logging.debug("Connection timeout")
                             
@@ -183,6 +190,8 @@ class KMP:
                         self.__fcount_mutex.acquire()
                         self.__fcount += 1
                         self.__fcount_mutex.release()
+                    else:
+                        logging.critical("File not downloaded correctly")
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 except FileNotFoundError:
@@ -235,19 +244,23 @@ class KMP:
         # Case 1, good extension
         return case1
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str) -> None:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None) -> None:
         """
         Puts all urls in imgLinks into download queue
 
         Param:
         imgLinks: all image links within a container
         dir: where to save the images
+        base_name: Prefix to name files, None for just counter
         
         Raise: DeadThreadPoolException when no download threads are available
         """
         if not self.__threads.get_status():
             raise DeadThreadPoolException
         
+        if not base_name:
+            base_name = ""
+
         global counter
         for link in imgLinks:
             href = link.get('href')
@@ -271,7 +284,7 @@ class KMP:
                 
             if src:
                 logging.debug("Extracted content link: " + src)
-                fname = dir + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                fname = dir + base_name + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
 
                 # Check if the post attachment shares the same name as another post attachemnt
                 # Adjust filename if found
@@ -362,18 +375,29 @@ class KMP:
                     logging.debug("Connection timeout")
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
-        titleDir = os.path.join(root, \
-            (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
-             ).split("/")[0] + "/")
 
+        # Create a new directory if packed or use artist directory for unpacked
+        work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
+             ).split("/")[0] + " - "
+        
+        # If not unpacked, need to consider if an existing dir exists
+        if not self.__unpacked:
+            titleDir = os.path.join(root, \
+            work_name + "/")
+            work_name = ""
 
-        # Check if directory has been registered ###################################
-        value = self.__register.hashtable_lookup_value(titleDir)
-        if value != None:  # If register, update titleDir and increment value
-            self.__register.hashtable_edit_value(titleDir, value + 1)
-            titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")/"
-        else:   # If not registered, add to register at value 1
-            self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
+            # Check if directory has been registered ###################################
+            value = self.__register.hashtable_lookup_value(titleDir)
+            if value != None:  # If register, update titleDir and increment value
+                self.__register.hashtable_edit_value(titleDir, value + 1)
+                titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")/"
+            else:   # If not registered, add to register at value 1
+                self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
+
+        # For unpacked, all files will be placed in the artist directory
+        else:
+            titleDir = root
+
 
         # Create directory if not registered
         if not os.path.isdir(titleDir):
@@ -382,22 +406,22 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        self.__queue_download_files(imgLinks, titleDir)
+        self.__queue_download_files(imgLinks, titleDir, work_name)
 
         # Link type
-        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + "file__text.txt")
+        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
 
         # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")
 
         if content:
-            if(os.path.exists(titleDir + "post__content.txt")):
+            if(os.path.exists(titleDir + work_name + "post__content.txt")):
                 logging.debug("Skipping duplicate post_content download")
             else:
                 text = content.getText(separator='\n', strip=True)
                 if len(text) > 0:
                     # Text section
-                    with open(titleDir + "post__content.txt", "w", encoding="utf-8") as fd:
+                    with open(titleDir + work_name + "post__content.txt", "w", encoding="utf-8") as fd:
                         fd.write(text)
                         links = content.find_all("a")
                         for link in links:
@@ -405,7 +429,7 @@ class KMP:
                             fd.write("\n" + hr)
                 
             # Image Section
-            self.__queue_download_files(content.find_all('img'), titleDir)
+            self.__queue_download_files(content.find_all('img'), titleDir, work_name)
 
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
@@ -415,7 +439,7 @@ class KMP:
                 # Confirm that attachment not from patreon 
                 if 'patreon' not in download:
                     src = self.__CONTAINER_PREFIX + download
-                    fname = os.path.join(titleDir, self.__trim_fname(attachment.text.strip()))
+                    fname = os.path.join(titleDir, work_name + self.__trim_fname(attachment.text.strip()))
                     
                     # Check if the post attachment shares the same name as another post attachemnt
                     # Adjust filename if found
@@ -433,14 +457,14 @@ class KMP:
         counter = 0
 
         # Download post comments ################################################
-        if(os.path.exists(titleDir + "post__comments.txt")):
+        if(os.path.exists(titleDir + work_name + "post__comments.txt")):
                 logging.debug("Skipping duplicate post comments")
         elif "patreon" in url or "fanbox" in url:
             comments = soup.find("div", class_="post__comments")
             if comments and len(comments.getText(strip=True)) > 0:
                 text = comments.getText(separator='\n', strip=True)
                 if(text and text != "No comments found for this post." and len(text) > 0):
-                    jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + "post__comments.txt", 'w')
+                    jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + work_name + "post__comments.txt", 'w')
                    
     def __process_window(self, url: str, continuous: bool) -> None:
         """
@@ -700,7 +724,7 @@ class KMP:
         threads.join_queue()
         threads.kill_threads()
 
-    def routine(self, url: str | list[str] | None) -> None:
+    def routine(self, url: str | list[str] | None, unpacked:bool | None) -> None:
         """
         Main routine, processes an 3 kinds of artist links specified in the project spec.
         if url is None, ask for a url.
@@ -708,9 +732,16 @@ class KMP:
         Param:
         url: supported url(s), if single string, process single url, if list, process multiple
             urls. If None, ask user for a url
+        unpacked: Whether or not to pack contents tightly or loosely, default is tightly packed.
         """
+        if unpacked is None:
+            self.__unpacked = False
+        else:
+            self.__unpacked = unpacked
+
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
+
 
 
         # Get url to download ######################
@@ -749,8 +780,10 @@ def help() -> None:
     logging.info("-v : Enables unzipping of files automatically")
     logging.info(
         "-c <#> : Adjust download chunk size in bytes (Default is 64M)")
-    logging.info("-h : Help")
     logging.info("-t <#> : Change download thread count (default is 6)")
+    logging.info("-u : Enable unpacked file organization, all works will not have their own folder")    
+    logging.info("-h : Help")
+
 
 
 def main() -> None:
@@ -766,6 +799,7 @@ def main() -> None:
     unzip = False
     tcount = -1
     chunksz = -1
+    unpacked = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -777,6 +811,10 @@ def main() -> None:
                 unzip = True
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
+            elif sys.argv[pointer] == '-u':
+                unpacked = True
+                pointer += 1
+                logging.info("UNPACKED -> TRUE")
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
                 #folder = dirs.convert_win_to_py_path(dirs.replace_dots_to_py_path(sys.argv[pointer + 1]))
                 folder = os.path.abspath(sys.argv[pointer + 1])
@@ -798,7 +836,7 @@ def main() -> None:
     # Run the downloader
     if folder:
         downloader = KMP(folder, unzip, tcount, chunksz)
-        downloader.routine(urls)
+        downloader.routine(urls, unpacked)
         downloader.close()
     else:
         help()
