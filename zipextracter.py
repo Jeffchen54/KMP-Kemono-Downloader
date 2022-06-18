@@ -38,7 +38,6 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
             directly to destpath.
         Pre: Is a zip file, can be checked using supported_zip_type()
         """
-
         # A tempdir is used to bypass Window's 255 char limit when unzipping files
         with tempfile.TemporaryDirectory(prefix="temp") as dirpath:
             try:
@@ -56,7 +55,7 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
                                 # If duplicate file/dir is found, it will be stashed in the same dir but with (n) prepended 
                                 counter = 1
                                 nextName = e.filename
-                                currSz = jutils.getDirSz(os.path.abspath(dirpath + "/" + f))
+                                currSz = jutils.getDirSz(os.path.abspath(dirpath + "/" + f.replace("\\", "")))
                                 # Check directory size of dirpath vs destpath, if same size, we are done
                                 done = False
                                 while(not done):

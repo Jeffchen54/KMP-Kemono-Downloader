@@ -26,6 +26,8 @@ Using multithreading
 - Chunked downloaded reuse chunks
 - Added unpacked download mode, each work will not be placed in their own folder and will instead
     be placed in a main folder
+- Now downloads Discord content in the correct order!
+- Fixed an uncommon bug where an exception could occur due to extracting files of same name by chance
 @author Jeff Chen
 @version 0.5.1
 @last modified 6/15/2022
@@ -378,13 +380,14 @@ class KMP:
 
         # Create a new directory if packed or use artist directory for unpacked
         work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
-             ).split("/")[0] + " - "
+             ).split("/")[0]
         
         # If not unpacked, need to consider if an existing dir exists
         if not self.__unpacked:
             titleDir = os.path.join(root, \
-            work_name + "/")
+            work_name) + "/"
             work_name = ""
+            
 
             # Check if directory has been registered ###################################
             value = self.__register.hashtable_lookup_value(titleDir)
@@ -397,6 +400,7 @@ class KMP:
         # For unpacked, all files will be placed in the artist directory
         else:
             titleDir = root
+            work_name += ' - '
 
 
         # Create directory if not registered
@@ -607,15 +611,11 @@ class KMP:
         elif os.path.exists(dir + text_file):
             os.remove(dir + text_file)
         
-        # Read every json on the server in chunks and put it into queue
+        # Read every json on the server and put it in queue
         discordScraper = DiscordToJson()
+        js = discordScraper.discord_lookup_all(serverJs.get("id"), self.__session)
 
-        js = discordScraper.discord_channel_lookup(serverJs.get("id"), self.__session)
-        buffer = []
-        while len(js) > 0:
-            buffer.insert(0, "".join(self.__download_discord_js(js, dir)))
-            js = discordScraper.discord_channel_lookup(None, self.__session)
-        
+        buffer = ("".join(self.__download_discord_js(js, dir)))
         # Write buffered discord text content to file
         jutils.write_utf8("".join(buffer), dir + 'discord__content.txt', 'a')
         global counter
