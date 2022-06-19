@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import patoolib
 from patoolib import util
+import sys
 
 import jutils
 """
@@ -89,3 +90,11 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
                             "File size: " + str(os.stat(zippath).st_size))
+
+def main():
+    if supported_zip_type(sys.argv[1]):
+        extract_zip(os.path.abspath(sys.argv[1]), os.path.abspath("./testing") + '\\', True)
+    else:
+        print("Is not ZIP -> " + sys.argv[1])
+if __name__ == "__main__":
+    main()

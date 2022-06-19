@@ -26,8 +26,12 @@ Using multithreading
 - Chunked downloaded reuse chunks
 - Added unpacked download mode, each work will not be placed in their own folder and will instead
     be placed in a main folder
-- Now downloads Discord content in the correct order!
+- Now downloads Discord content in the correct order!!!!!
 - Fixed an uncommon bug where an exception could occur due to extracting files of same name by chance
+- Fixed issues where an undefined char in a filename results in an nonexistant directory being accessed.
+- Removed inconsistency where / is used instead of \\ in file paths
+- TODO File extension exclusion
+- TODO Contentless file switch
 @author Jeff Chen
 @version 0.5.1
 @last modified 6/15/2022
@@ -145,7 +149,7 @@ class KMP:
                 logging.debug("Connection request unanswered, retrying")
         fullsize = r.headers.get('Content-Length')
         downloaded = 0
-        f = fname.split('/')[len(fname.split('/')) - 1]
+        f = fname.split('\\')[len(fname.split('\\')) - 1]
 
         # If file cannot be downloaded, it is most likely an invalid file
         if fullsize == None:
@@ -204,7 +208,7 @@ class KMP:
 
             # Unzip file if specified
             if self.__unzip and zipextracter.supported_zip_type(fname):
-                zipextracter.extract_zip(fname, fname.rpartition('/')[0] + '/', temp=True)
+                zipextracter.extract_zip(fname, fname.rpartition('\\')[0] + '\\', temp=True)
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -233,18 +237,22 @@ class KMP:
         Return: trimmed filename with extension
         """
         # Case 3, space
+             # Case 3, space
         case3 = fname.partition(' ')[2]
         if case3 != fname and len(case3) > 0:
-            return case3
+            return re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                          case3)
 
         case1 = fname.rpartition('=')[2]
         # Case 2, bad extension provided
         if len(case1.rpartition('.')[2]) > 6:
             first = fname.rpartition('?')[0]
-            return first.rpartition('/')[2]
+            return re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                          first.rpartition('\\')[2])
         
         # Case 1, good extension
-        return case1
+        return re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                          case1)
 
     def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None) -> None:
         """
@@ -380,12 +388,12 @@ class KMP:
 
         # Create a new directory if packed or use artist directory for unpacked
         work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
-             ).split("/")[0]
+             ).split("\\")[0]
         
         # If not unpacked, need to consider if an existing dir exists
         if not self.__unpacked:
             titleDir = os.path.join(root, \
-            work_name) + "/"
+            work_name) + "\\"
             work_name = ""
             
 
@@ -393,7 +401,7 @@ class KMP:
             value = self.__register.hashtable_lookup_value(titleDir)
             if value != None:  # If register, update titleDir and increment value
                 self.__register.hashtable_edit_value(titleDir, value + 1)
-                titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")/"
+                titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
                 self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
 
@@ -490,7 +498,7 @@ class KMP:
         # Create directory
         artist = soup.find("meta", attrs={'name': 'artist_name'})
         titleDir = self.__folder + re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                          artist.get('content')) + "/"
+                                          artist.get('content')) + "\\"
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
 
@@ -534,7 +542,7 @@ class KMP:
         Pre: titleDir exists
         Return: Buffer containing text data
         """
-        imageDir = titleDir + "images/"
+        imageDir = titleDir + "images\\"
 
         # make dir
         if not os.path.isdir(imageDir):
@@ -590,15 +598,15 @@ class KMP:
 
         Param:
             serverJS: discord server json token, in format {"id":xxx,"name":xxx}
-            titleDir: Where to store discord content, absolute directory ends with '/'
+            titleDir: Where to store discord content, absolute directory ends with '\\'
         """
-        dir = titleDir + serverJs.get('name') + '/'
+        dir = titleDir + serverJs.get('name') + '\\'
 
         # Make sure a dupe directory does not exists, if so, adjust dir name
         value = self.__register.hashtable_lookup_value(dir)
         if value != None:  # If register, update titleDir and increment value
             self.__register.hashtable_edit_value(dir, value + 1)
-            dir = dir[0:len(dir) - 1] + "(" + str(value) + ")/"
+            dir = dir[0:len(dir) - 1] + "(" + str(value) + ")\\"
         else:   # If not registered, add to register at value 1
             self.__register.hashtable_add(KVPair[str, int](dir, 1))
 
@@ -680,7 +688,7 @@ class KMP:
             soup = BeautifulSoup(reqs.text, 'html.parser')
             artist = soup.find("a", attrs={'class': 'post__user-name'})
             titleDir = self.__folder + \
-                re.sub(r'[^\w\-_\. ]|[\.]$', '', artist.text.strip()) + "/"
+                re.sub(r'[^\w\-_\. ]|[\.]$', '', artist.text.strip()) + "\\"
             if not os.path.isdir(titleDir):
                 os.makedirs(titleDir)
             reqs.close()
@@ -689,7 +697,7 @@ class KMP:
 
         # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
-            self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "/")
+            self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\")
 
         # For multiple window pages
         elif 'user' in url:
@@ -776,7 +784,7 @@ def help() -> None:
     logging.info(
         "-f <textfile.txt> : Download from text file containing links")
     logging.info(
-        "-d <path> : REQUIRED - Set download path for single instance, must use '/'")
+        "-d <path> : REQUIRED - Set download path for single instance, must use '\\'")
     logging.info("-v : Enables unzipping of files automatically")
     logging.info(
         "-c <#> : Adjust download chunk size in bytes (Default is 64M)")
@@ -816,7 +824,6 @@ def main() -> None:
                 pointer += 1
                 logging.info("UNPACKED -> TRUE")
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
-                #folder = dirs.convert_win_to_py_path(dirs.replace_dots_to_py_path(sys.argv[pointer + 1]))
                 folder = os.path.abspath(sys.argv[pointer + 1])
                 if not folder[len(folder) - 1] == '\\':
                     folder += '\\'

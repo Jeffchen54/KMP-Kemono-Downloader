@@ -28,7 +28,7 @@ class KMPTestCase(unittest.TestCase):
         """
         Create temporary testing directory
         """
-        cls.tempdir = os.path.abspath('./') + '/temp/'
+        cls.tempdir = os.path.abspath('./') + '\\temp\\'
 
         if os.path.exists(cls.tempdir):
             logging.critical("Please remove before testing ->" + cls.tempdir)
@@ -546,7 +546,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.KMP.routine(unpacked=False, url="https://kemono.party/discord/server/634594002624184360")
 
         # 100
-        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/100円_100yen/discord__content.txt")).st_size, 10039)
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/100円_100yen/discord__content.txt")).st_size, 7845)
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/100円_100yen/images")), 75556767)
 
         # 100(1)
@@ -554,7 +554,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/100円_100yen(1)/images")), 0)
         
         # 300 
-        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/300ビール_beer/discord__content.txt")).st_size, 30561)
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/300ビール_beer/discord__content.txt")).st_size, 20742)
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/300ビール_beer/images")), 277344917)
 
         # 300
@@ -562,13 +562,13 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/300ビール_beer(1)/images")), 8197562)
 
         # wip
-        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/作業中_wip/discord__content.txt")).st_size, 202136)
+        self.assertEqual(os.stat(os.path.join(self.tempdir, "634594002624184360/作業中_wip/discord__content.txt")).st_size, 128463)
         self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "634594002624184360/作業中_wip/images")), 487333680)
 
         self.KMP.close()
 
 
-    def test_unpacked(self, dir:str):
+    def test_unpacked(self):
         """
         Tests the unpacked download mode
         """
@@ -586,8 +586,22 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         # Single work
         self.KMP.routine(unpacked=True, url="https://kemono.party/fanbox/user/24164271/post/2934828")
 
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "Abbie Gonzalez")), 0)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "ie")), 1)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 155)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "めかの工場")), 138)
+
         self.KMP.close()
 
+    def test_download_undefined_char(self):
+        """
+        Tests downloading a file whose name contains an 
+        undefined char
+        """
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=12, chunksz=None)
+        self.KMP.routine(unpacked=False, url="https://kemono.party/patreon/user/38223307/post/43447399")
+        self.assertEqual(self.getDirSz(os.path.join(self.tempdir, "HALkawa501/PSDChina Miku PSDClip Data by HALkawa501 from Patreon  Kemono")), 140413258)
+        self.KMP.close()
 
     def getDirSz(self, dir: str) -> int:
         """
@@ -603,6 +617,15 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
                 if not os.path.islink(fp):
                     size += os.path.getsize(fp)
         return size
+
+    def getNumFiles(self, dir:str) -> int:
+        """
+        Returns the number of files in a directory
+
+        Return number of files in a directory
+        """
+        return len([name for name in os.listdir(dir) if os.path.isfile(os.path.join(dir, name))])
+
 
 
 
