@@ -23,7 +23,6 @@ Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Vastly improved code organization
 - Fixed possible bug where file download count not accurate if file was not downloaded entirely
-- Chunked downloaded reuse chunks
 - Added unpacked download mode, each work will not be placed in their own folder and will instead
     be placed in a main folder
 - Now downloads Discord content in the correct order!!!!!
@@ -34,7 +33,7 @@ Using multithreading
 - TODO Contentless file switch
 @author Jeff Chen
 @version 0.5.1
-@last modified 6/15/2022
+@last modified 6/19/2022
 """
 
 counter = 0
@@ -165,7 +164,7 @@ class KMP:
                     data = None
                     while not data:
                         try:
-                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', 'Range': 'bytes=' + str(downloaded) + '-' + fullsize})
+                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'})
                             if(downloaded > 0):
                                 logging.info("Grabbing next bytes -> (" + str(downloaded) + " / " + fullsize + ")")
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
@@ -750,8 +749,6 @@ class KMP:
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
 
-
-
         # Get url to download ######################
         # List type url
         if isinstance(url, list):
@@ -788,6 +785,9 @@ def help() -> None:
     logging.info("-v : Enables unzipping of files automatically")
     logging.info(
         "-c <#> : Adjust download chunk size in bytes (Default is 64M)")
+    logging.info(
+        "-x \"txt, zip,...\" : Exclude files with listed extensions")
+    logging.info("-s : If a artist work is text only, do not create a dedicated directory for it")
     logging.info("-t <#> : Change download thread count (default is 6)")
     logging.info("-u : Enable unpacked file organization, all works will not have their own folder")    
     logging.info("-h : Help")
