@@ -46,20 +46,24 @@ file unzipping or are not going to unzip password protected zip files.
 - Enjoy!
 
 ## Command line arguments:
-KMPDownloader.py -f <.txt> : Bulk downloads all links in .txt file, must be last switch used if used
+-f <textfile.txt> : Download from text file containing links
 
-KMPDownloader.py -d <path> : Sets download path for a single download instance, must use /
-  
-KMPDownloader.py -v : Enables unzipping of files automatically
-  
-KMPDownloader.py -c <#> : Adjust download chunk size in bytes (Default is 64M)
-  
-KMPDownloader.py -t <#> : Change download thread count (default is 6)
- 
-KMPDownloader.py -h : Help
-  
-KMPDownloader.py : Prompts user to enter a url
+-d <path> : REQUIRED - Set download path for single instance, must use '\'
+    
+-c <#> : Adjust download chunk size in bytes (Default is 64M)
+    
+-x "txt, zip, ..., png" : Exclude files with listed extensions, NO '.'s
+    
+-s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files
+    
+-t <#> : Change download thread count (default is 6)
+    
+-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack
+    
+-h : Help
 
+ Default file organization is packed, all works will have their own folder within an artist folder.
+    
 ## Bulk file
   An example bulk file has been included "examples.txt"
   
@@ -110,11 +114,8 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
 File could not be downloaded due to HTML error. Can be caused by many cases. In this example, the file provided by Kemono's API does not exists and was probably deleted. Other websites 
   
  ### Specific Discord Issues:
-- Images are downloaded backwards, this cannot be fixed easily due to how Kemono's Discord API functions
-- Not all images are downloaded. This is because several images may be duplicate images pointing to the same url. Duplicate url images are automatically trimmed out.
 - Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
     
-*There are solutions to first 2nd bullets, expect them in following updates!
     
 ## Known bugs:
 - post_content.txt may contain garbage data at times
@@ -123,6 +124,20 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
 These bugs were accounted for but not enough testing has been conducted
   
 None
+ 
+ ## Changelog 0.5.1:
+- Vastly improved code organization
+- Fixed possible bug where file download count not accurate if file was not downloaded entirely
+- Added unpacked download mode, each work will not be placed in their own folder and will instead
+    be placed in a main folder
+- Now downloads Discord content in the correct order!!!!!
+- Fixed an uncommon bug where an exception could occur due to extracting files of same name by chance
+- Fixed issues where an undefined char in a filename results in an nonexistant directory being accessed.
+- Removed inconsistency where / is used instead of \\ in file paths
+- Removed shared resource leak between KMP instances
+- File extension exclusion
+- Contentless file switch
+ 
     
  ## Changelog 0.5
 - Significantly improved cases where multiple zip files unzip to the exact same destination, creates second directory instead of
