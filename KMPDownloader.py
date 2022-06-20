@@ -1,3 +1,4 @@
+import shutil
 from threading import Lock
 import requests
 from bs4 import BeautifulSoup, ResultSet
@@ -29,6 +30,7 @@ Using multithreading
 - Fixed an uncommon bug where an exception could occur due to extracting files of same name by chance
 - Fixed issues where an undefined char in a filename results in an nonexistant directory being accessed.
 - Removed inconsistency where / is used instead of \\ in file paths
+- Removed shared resource leak between KMP instances
 - TODO File extension exclusion
 - TODO Contentless file switch
 @author Jeff Chen
@@ -69,13 +71,13 @@ class KMP:
     __session:requests.Session
     __unpacked:bool
 
-    # DO NOT EDIT ################################################
     __CONTAINER_PREFIX = "https://kemono.party"
-    __register = HashTable(10)    # Registers a directory, combats multiple posts using the same name
-    __fcount = 0  # Number of downloaded files
-    __fcount_mutex = Lock()   # Mutex for fcount 
+    __register:HashTable   # Registers a directory, combats multiple posts using the same name
+    __fcount:int  # Number of downloaded files
+    __fcount_mutex:Lock   # Mutex for fcount 
+    __ext_blacklist:HashTable
 
-    def __init__(self, folder: str, unzip: bool, tcount: int | None, chunksz: int | None) -> None:
+    def __init__(self, folder: str, unzip: bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -84,14 +86,16 @@ class KMP:
             uinzip: True to automatically unzip files, false to not
             tcount: Number of threads to use, max thread count is 12, default is 6
             chunksz: Download chunk size, default is 1024 * 1024 * 64
+            ext_blacklist: List of file extensions to skips, does not contain '.' and no spaces
         """
         if folder:
             self.__folder = folder
         else:
             raise UnspecifiedDownloadPathException
-
+        self.__register = HashTable(1000)
+        self.__fcount = 0
         self.__unzip = unzip
-
+        self.__fcount_mutex = Lock()
         if tcount and tcount > 0:
             self.__tcount = tcount
         else:
@@ -102,8 +106,14 @@ class KMP:
         else:
             self.__chunksz = 1024 * 1024 * 64
         
-        self.__unpacked = False
+        self.__unpacked = 0
 
+        if ext_blacklist:
+            self.ext_blacklist = HashTable(len(ext_blacklist) * 2)
+            for ext in ext_blacklist:
+                self.ext_blacklist.hashtable_add(KVPair(ext, ext))
+        else:
+            self.ext_blacklist = None
         # Create session ###########################
         self.__session = cfscrape.create_scraper(requests.Session())
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
@@ -156,7 +166,7 @@ class KMP:
             logging.critical("src: " + src + "\npath: " + fname)
         
         # Download and skip duplicate file
-        elif not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize): 
+        elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.ext_blacklist or self.ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
             done = False
             while(not done):
                 try:
@@ -165,8 +175,6 @@ class KMP:
                     while not data:
                         try:
                             data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'})
-                            if(downloaded > 0):
-                                logging.info("Grabbing next bytes -> (" + str(downloaded) + " / " + fullsize + ")")
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                              logging.debug("Connection timeout")
                             
@@ -247,13 +255,13 @@ class KMP:
         if len(case1.rpartition('.')[2]) > 6:
             first = fname.rpartition('?')[0]
             return re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                          first.rpartition('\\')[2])
+                                          first.rpartition('/')[2])
         
         # Case 1, good extension
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None) -> None:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None) -> int:
         """
         Puts all urls in imgLinks into download queue
 
@@ -263,7 +271,9 @@ class KMP:
         base_name: Prefix to name files, None for just counter
         
         Raise: DeadThreadPoolException when no download threads are available
+        Return number of files queued
         """
+        downcount = 0
         if not self.__threads.get_status():
             raise DeadThreadPoolException
         
@@ -307,6 +317,8 @@ class KMP:
                 
                 self.__threads.enqueue((self.__download_file, (src, fname)))
                 counter += 1
+                downcount += 1
+        return downcount
 
     def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
         """
@@ -360,6 +372,7 @@ class KMP:
         
         Raise: DeadThreadPoolException when no download threads are available
         """
+        downcount = 0
         logging.debug("Processing: " + url + " to be stored in " + root)
         if not self.__threads.get_status():
             raise DeadThreadPoolException
@@ -388,14 +401,14 @@ class KMP:
         # Create a new directory if packed or use artist directory for unpacked
         work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
              ).split("\\")[0]
+        backup = work_name + " - "
         
         # If not unpacked, need to consider if an existing dir exists
-        if not self.__unpacked:
+        if self.__unpacked < 2:
             titleDir = os.path.join(root, \
             work_name) + "\\"
             work_name = ""
             
-
             # Check if directory has been registered ###################################
             value = self.__register.hashtable_lookup_value(titleDir)
             if value != None:  # If register, update titleDir and increment value
@@ -417,8 +430,7 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        self.__queue_download_files(imgLinks, titleDir, work_name)
-
+        downcount += self.__queue_download_files(imgLinks, titleDir, work_name)
         # Link type
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
 
@@ -463,6 +475,7 @@ class KMP:
                         self.__register.hashtable_add(KVPair[str, int](fname, 1))
 
                     self.__threads.enqueue((self.__download_file, (src, fname)))
+                    downcount += 1
         
         global counter
         counter = 0
@@ -476,6 +489,13 @@ class KMP:
                 text = comments.getText(separator='\n', strip=True)
                 if(text and text != "No comments found for this post." and len(text) > 0):
                     jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + work_name + "post__comments.txt", 'w')
+        
+        # If partial unpacked, check if directory download count == 0, if so, unpack those files
+        if self.__unpacked == 1 and downcount == 0:
+            
+            for f in os.listdir(titleDir):
+                shutil.move(titleDir + f, root + backup + f)
+            shutil.rmtree(titleDir)
                    
     def __process_window(self, url: str, continuous: bool) -> None:
         """
@@ -731,7 +751,7 @@ class KMP:
         threads.join_queue()
         threads.kill_threads()
 
-    def routine(self, url: str | list[str] | None, unpacked:bool | None) -> None:
+    def routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
         """
         Main routine, processes an 3 kinds of artist links specified in the project spec.
         if url is None, ask for a url.
@@ -740,11 +760,14 @@ class KMP:
         url: supported url(s), if single string, process single url, if list, process multiple
             urls. If None, ask user for a url
         unpacked: Whether or not to pack contents tightly or loosely, default is tightly packed.
+            Levels 0 -> no unpacking, 1 -> partial unpacking, 2 -> unpack all
+        
         """
         if unpacked is None:
-            self.__unpacked = False
+            self.__unpacked = 0
         else:
             self.__unpacked = unpacked
+
 
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
@@ -786,10 +809,10 @@ def help() -> None:
     logging.info(
         "-c <#> : Adjust download chunk size in bytes (Default is 64M)")
     logging.info(
-        "-x \"txt, zip,...\" : Exclude files with listed extensions")
-    logging.info("-s : If a artist work is text only, do not create a dedicated directory for it")
+        "-x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s")
+    logging.info("-s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files")
     logging.info("-t <#> : Change download thread count (default is 6)")
-    logging.info("-u : Enable unpacked file organization, all works will not have their own folder")    
+    logging.info("-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack")    
     logging.info("-h : Help")
 
 
@@ -808,6 +831,8 @@ def main() -> None:
     tcount = -1
     chunksz = -1
     unpacked = False
+    excluded:list = []
+    partial_unpack = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -821,6 +846,7 @@ def main() -> None:
                 logging.info("UNZIP -> " + str(unzip))
             elif sys.argv[pointer] == '-u':
                 unpacked = True
+                partial_unpack = False
                 pointer += 1
                 logging.info("UNPACKED -> TRUE")
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
@@ -837,13 +863,29 @@ def main() -> None:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("CHUNKSZ -> " + str(chunksz))
+            elif sys.argv[pointer] == '-x' and len(sys.argv) >= pointer:
+                 
+                for ext in sys.argv[pointer + 1].split(','):
+                    excluded.append(ext.strip())
+                pointer += 2
+                logging.info("EXCLUDED -> " + str(excluded))
+            elif sys.argv[pointer] == '-s':
+                if not unpacked:
+                    partial_unpack = True
+                    logging.info("PARTIAL_UNPACK -> TRUE")
+                    pointer += 1
             else:
                 pointer = len(sys.argv)
 
     # Run the downloader
     if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz)
-        downloader.routine(urls, unpacked)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded)
+        if unpacked:
+            downloader.routine(urls, 2)
+        elif partial_unpack:
+            downloader.routine(urls, 1)
+        else:
+            downloader.routine(urls, 0)
         downloader.close()
     else:
         help()
