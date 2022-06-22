@@ -113,7 +113,7 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
   ### File does not exists:
     CRITICAL:root:(404)Link provided cannot be downloaded from, possibly a dead third party link: https://kemono.party/attachments/discord/634594002624184360/634659046678593536/772072375331717131/-10.png
     
-File could not be downloaded due to HTML error. Can be caused by many cases. In this example, the file provided by Kemono's API does not exists and was probably deleted. Other websites 
+File could not be downloaded due to HTML error. Can be caused by many cases. In this example, the file provided by Kemono's API does not exists and was probably deleted.
   
  ### Corrupted Japanese Zip Contents:
  Files look like this?
