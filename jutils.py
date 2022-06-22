@@ -20,6 +20,31 @@ def write_utf8(text:str, path:str, mode:str) -> None:
     with io.open(path, mode=mode,  encoding='utf-8') as fd:
         fd.write(text)
 
+
+def write_to_file(path:str, line: str, mutex) -> None:
+    """
+    Appends to a file, creates the file if it does not exists
+
+    Param:
+        path: file to write to, absolute path 
+        line: line to append to file
+        mutex: (Optional) mutex lock associated with the file
+    """
+    if mutex:
+        mutex.acquire()
+
+    write_utf8(line, path, 'a')
+    #if not os.path.exists(path):
+    #    open(path, 'a').close()
+
+    #with open(fname, "a") as myfile:
+    #    myfile.write(line)
+
+
+    if mutex:
+        mutex.release()
+
+
 def getDirSz(dir: str) -> int:
     """
     Returns directory and its content size

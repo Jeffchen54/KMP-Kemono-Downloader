@@ -22,23 +22,19 @@ import zipextracter
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Vastly improved code organization
-- Fixed possible bug where file download count not accurate if file was not downloaded entirely
-- Added unpacked download mode, each work will not be placed in their own folder and will instead
-    be placed in a main folder
-- Now downloads Discord content in the correct order!!!!!
-- Fixed an uncommon bug where an exception could occur due to extracting files of same name by chance
-- Fixed issues where an undefined char in a filename results in an nonexistant directory being accessed.
-- Removed inconsistency where / is used instead of \\ in file paths
-- Removed shared resource leak between KMP instances
-- TODO File extension exclusion
-- TODO Contentless file switch
+- HTML 429 retry and config timeout
+- Improved error messages
+- Error logging
 @author Jeff Chen
-@version 0.5.1
-@last modified 6/19/2022
+@version 0.5.2
+@last modified 6/21/2022
 """
 
 counter = 0
+LOG_PATH = os.path.abspath(".") + "\\logs\\"
+LOG_NAME = LOG_PATH + "LOG - " + str(int(time.monotonic())) + ".txt"
+LOG_MUTEX = Lock()
+
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -75,18 +71,22 @@ class KMP:
     __register:HashTable   # Registers a directory, combats multiple posts using the same name
     __fcount:int  # Number of downloaded files
     __fcount_mutex:Lock   # Mutex for fcount 
+    __failed:int  # Number of downloaded files
+    __failed_mutex:Lock   # Mutex for fcount     
     __ext_blacklist:HashTable
+    __timeout:int
 
-    def __init__(self, folder: str, unzip: bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None) -> None:
+    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1) -> None:
         """
         Initializes all variables. Does not run the program
 
         Param:
             folder: Folder to download to, cannot be None
-            uinzip: True to automatically unzip files, false to not
+            unzip: True to automatically unzip files, false to not
             tcount: Number of threads to use, max thread count is 12, default is 6
             chunksz: Download chunk size, default is 1024 * 1024 * 64
             ext_blacklist: List of file extensions to skips, does not contain '.' and no spaces
+            timeout: Max retries, default is infinite (-1)
         """
         if folder:
             self.__folder = folder
@@ -96,6 +96,9 @@ class KMP:
         self.__fcount = 0
         self.__unzip = unzip
         self.__fcount_mutex = Lock()
+        self.__timeout = timeout
+        self.__failed = 0
+        self.__failed_mutex = Lock()
         if tcount and tcount > 0:
             self.__tcount = tcount
         else:
@@ -107,13 +110,13 @@ class KMP:
             self.__chunksz = 1024 * 1024 * 64
         
         self.__unpacked = 0
-
+        
         if ext_blacklist:
-            self.ext_blacklist = HashTable(len(ext_blacklist) * 2)
+            self.__ext_blacklist = HashTable(len(ext_blacklist) * 2)
             for ext in ext_blacklist:
-                self.ext_blacklist.hashtable_add(KVPair(ext, ext))
+                self.__ext_blacklist.hashtable_add(KVPair(ext, ext))
         else:
-            self.ext_blacklist = None
+            self.__ext_blacklist = None
         # Create session ###########################
         self.__session = cfscrape.create_scraper(requests.Session())
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
@@ -145,14 +148,30 @@ class KMP:
         """
         logging.debug("Downloading " + fname + " from " + src)
         r = None
+        timeout = 0
         # Grabbing content length 
         while not r:
             try:
                 r = self.__session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
-                    logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, possibly a dead third party link: " + src)
-                    return
+                    if r.status_code == 429:
+                        if timeout == self.__timeout:
+                            logging.critical("Reached maximum timeout, writing error to log")
+                            jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
+                            self.__failed_mutex.acquire()
+                            self.__failed += 1
+                            self.__failed_mutex.release()
+                            return
+                        else:
+                            timeout += 1
+                            logging.warning("Kemono party is rate limiting this download, download restarted in 10 seconds:\nSrc: " + src + "\nFname: " + fname)
+                            time.sleep(10)
+                        
+                    else:
+                        logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
+                        jutils.write_to_file(LOG_NAME, "{code} TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+                        return
 
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 logging.debug("Connection request unanswered, retrying")
@@ -162,11 +181,11 @@ class KMP:
 
         # If file cannot be downloaded, it is most likely an invalid file
         if fullsize == None:
-            logging.critical("Download was attempted on an undownloadable file, details described")
-            logging.critical("src: " + src + "\npath: " + fname)
+            logging.critical("Download was attempted on an undownloadable file, details describe\nSrc: " + src + "\nFname: " + fname)
+            jutils.write_to_file(LOG_NAME, "UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
         
         # Download and skip duplicate file
-        elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.ext_blacklist or self.ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
+        elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
             done = False
             while(not done):
                 try:
@@ -204,7 +223,7 @@ class KMP:
                         self.__fcount += 1
                         self.__fcount_mutex.release()
                     else:
-                        logging.critical("File not downloaded correctly")
+                        logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + fname)
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 except FileNotFoundError:
@@ -724,6 +743,7 @@ class KMP:
         # Not found, we complain
         else:
             logging.critical("Unknown URL -> " + url)
+            # WRITETOLOG
             raise UnknownURLTypeException
 
     def __create_threads(self, count: int) -> ThreadPool:
@@ -793,6 +813,7 @@ class KMP:
         # Close threads ###########################
         self.__kill_threads(self.__threads)
         logging.info("Files downloaded: " + str(self.__fcount))
+        logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
 
 
 def help() -> None:
@@ -812,7 +833,8 @@ def help() -> None:
         "-x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s")
     logging.info("-s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files")
     logging.info("-t <#> : Change download thread count (default is 6)")
-    logging.info("-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack")    
+    logging.info("-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack")   
+    logging.info("-r <#> : Maximum number of retries, default is infinite") 
     logging.info("-h : Help")
 
 
@@ -832,6 +854,7 @@ def main() -> None:
     chunksz = -1
     unpacked = False
     excluded:list = []
+    retries = -1
     partial_unpack = False
     if len(sys.argv) > 1:
         pointer = 1
@@ -863,6 +886,10 @@ def main() -> None:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("CHUNKSZ -> " + str(chunksz))
+            elif sys.argv[pointer] == '-r' and len(sys.argv) >= pointer:
+                retries = int(sys.argv[pointer + 1])
+                pointer += 2
+                logging.info("RETRIES -> " + str(retries))
             elif sys.argv[pointer] == '-x' and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
@@ -877,9 +904,13 @@ def main() -> None:
             else:
                 pointer = len(sys.argv)
 
+    # Prelim dirs
+    if not os.path.exists(LOG_PATH):
+        os.makedirs(LOG_PATH)
+
     # Run the downloader
     if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries)
         if unpacked:
             downloader.routine(urls, 2)
         elif partial_unpack:
