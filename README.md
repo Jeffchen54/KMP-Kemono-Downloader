@@ -115,6 +115,12 @@ https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist wor
     
 File could not be downloaded due to HTML error. Can be caused by many cases. In this example, the file provided by Kemono's API does not exists and was probably deleted. Other websites 
   
+ ### Corrupted Japanese Zip Contents:
+ Files look like this?
+ 
+ ![image](https://user-images.githubusercontent.com/78765964/175039979-1dc7b2b9-ac4b-461e-b0dc-587ada9bb473.png)
+    
+ Follow instructions in the video here -> https://www.youtube.com/watch?v=bo52rBmTiT8
  ### Specific Discord Issues:
 - Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
     
