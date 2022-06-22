@@ -59,6 +59,8 @@ file unzipping or are not going to unzip password protected zip files.
 -t <#> : Change download thread count (default is 6)
     
 -u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack
+
+-r <#> : Maximum number of retries for HTTP 429 error, default is infinite
     
 -h : Help
 
@@ -124,6 +126,11 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
 These bugs were accounted for but not enough testing has been conducted
   
 None
+ 
+## Changelog 0.5.2:
+- HTML 429 retry and config timeout
+- Improved error messages
+- Error logging    
  
  ## Changelog 0.5.1:
 - Vastly improved code organization
