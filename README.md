@@ -18,6 +18,7 @@ View changelog for more details on features not included here.
 - Extraction of a work's content and comments*.
 - Queuing system, download multiple URLs without user input
 - Multhreading support, significant download speed bonus.
+- Ease of use, cookies are for eating only!  
 
 *Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
 
