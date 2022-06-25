@@ -22,9 +22,9 @@ def supported_zip_type(fname:str) -> bool:
             fname: zip file name or path
         Return True if zip file, false if not
         """
-        extension = fname.rpartition('/')[2]
-
-        return 'zip' in extension or 'rar' in extension or '7z' in extension
+        file = fname.rpartition('/')[2]
+        extension = file.rpartition('.')[2]
+        return 'zip' == extension or 'rar' == extension or '7z' == extension
         
 def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
         """

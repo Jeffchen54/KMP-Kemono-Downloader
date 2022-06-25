@@ -10,6 +10,8 @@ import cfscrape
 from tqdm import tqdm
 import logging
 import requests.adapters
+from datetime import datetime, timezone
+
 
 import jutils
 from DiscordtoJson import DiscordToJson
@@ -22,19 +24,23 @@ import zipextracter
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- HTML 429 retry and config timeout
-- Improved error messages
-- Error logging
+- Pre existing download folder check
+- Better logging filename reflecting human readable UTC time
+- Fixed issues where zip file check checked more than the extension
+- Post file check for partial unpack
+- TODO Set HTTP codes to retry
+
 @author Jeff Chen
-@version 0.5.2
+@version 0.5.3
 @last modified 6/21/2022
 """
-
+HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', "cookie":"__ddg1_=0PwFIPlOEttVQ9wrP7a1"}
 counter = 0
+now = datetime.now(tz = timezone.utc)
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
-LOG_NAME = LOG_PATH + "LOG - " + str(int(time.monotonic())) + ".txt"
+LOG_NAME = LOG_PATH + "LOG - " + now.strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
-
+CA_FILE = True
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -75,6 +81,7 @@ class KMP:
     __failed_mutex:Lock   # Mutex for fcount     
     __ext_blacklist:HashTable
     __timeout:int
+    __post_process:list
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1) -> None:
         """
@@ -99,6 +106,7 @@ class KMP:
         self.__timeout = timeout
         self.__failed = 0
         self.__failed_mutex = Lock()
+        self.__post_process = []
         if tcount and tcount > 0:
             self.__tcount = tcount
         else:
@@ -155,7 +163,7 @@ class KMP:
                 r = self.__session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
-                    if r.status_code == 429:
+                    if r.status_code == 429 or r.status_code == 403:
                         if timeout == self.__timeout:
                             logging.critical("Reached maximum timeout, writing error to log")
                             jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
@@ -165,7 +173,7 @@ class KMP:
                             return
                         else:
                             timeout += 1
-                            logging.warning("Kemono party is rate limiting this download, download restarted in 10 seconds:\nSrc: " + src + "\nFname: " + fname)
+                            logging.warning("Kemono party is rate limiting this download, download restarted in 10 seconds:\nCode: " + str(r.status_code) + "\nSrc: " + src + "\nFname: " + fname)
                             time.sleep(10)
                         
                     else:
@@ -193,7 +201,7 @@ class KMP:
                     data = None
                     while not data:
                         try:
-                            data = self.__session.get(src, stream=True, timeout=5, headers={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'})
+                            data = self.__session.get(src, stream=True, timeout=5, headers=HEADERS, verify=CA_FILE)
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                              logging.debug("Connection timeout")
                             
@@ -391,7 +399,6 @@ class KMP:
         
         Raise: DeadThreadPoolException when no download threads are available
         """
-        downcount = 0
         logging.debug("Processing: " + url + " to be stored in " + root)
         if not self.__threads.get_status():
             raise DeadThreadPoolException
@@ -400,7 +407,7 @@ class KMP:
         reqs = None
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=5)
+                reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -411,7 +418,7 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=5)
+                    reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
                 except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                     logging.debug("Connection timeout")
             soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -449,7 +456,7 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        downcount += self.__queue_download_files(imgLinks, titleDir, work_name)
+        self.__queue_download_files(imgLinks, titleDir, work_name)
         # Link type
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
 
@@ -494,7 +501,6 @@ class KMP:
                         self.__register.hashtable_add(KVPair[str, int](fname, 1))
 
                     self.__threads.enqueue((self.__download_file, (src, fname)))
-                    downcount += 1
         
         global counter
         counter = 0
@@ -509,13 +515,31 @@ class KMP:
                 if(text and text != "No comments found for this post." and len(text) > 0):
                     jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + work_name + "post__comments.txt", 'w')
         
-        # If partial unpacked, check if directory download count == 0, if so, unpack those files
-        if self.__unpacked == 1 and downcount == 0:
-            
-            for f in os.listdir(titleDir):
-                shutil.move(titleDir + f, root + backup + f)
-            shutil.rmtree(titleDir)
-                   
+        # Add to post process queue if partial unpack is on
+        if self.__unpacked == 1:
+            self.__post_process.append((self.__partial_unpack_post_process, (titleDir, root + backup)))
+    
+    def __partial_unpack_post_process(self, src, dest)->None:
+        """
+        Checks if a folder in src is text only, if so, move everything 
+        from src to dest
+
+        Param:
+            src: folder to check
+            dest: folder to move to
+        """
+        # Examine each file in src
+        for f in os.listdir(src):
+            # When encounter first non text file, return from func
+            if f.rpartition('.')[2] != "txt":
+                return
+
+        # If not returned, move everything and delete old folder
+        for f in os.listdir(src):
+            shutil.move(src + f, dest + f)
+        shutil.rmtree(src)    
+        return
+
     def __process_window(self, url: str, continuous: bool) -> None:
         """
         Processes a single main artist window, a window is a page where multiple artist works can be seen
@@ -528,7 +552,7 @@ class KMP:
         # Make a connection
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=5)
+                reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -558,7 +582,7 @@ class KMP:
                 reqs = None
                 while not reqs:
                     try:
-                        reqs = self.__session.get(url + suffix + str(counter), timeout=5)
+                        reqs = self.__session.get(url + suffix + str(counter), timeout=5, headers=HEADERS, verify=CA_FILE)
                     except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                          logging.debug("Connection timeout")
                 soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -718,7 +742,7 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=5)
+                    reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
                 except(requests.exceptions.ConnectionError ,requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                      logging.debug("Connection timeout")
             if(reqs.status_code >= 400):
@@ -810,10 +834,20 @@ class KMP:
                     return
 
             self.__call_and_interpret_url(url)
+        
+        # Wait for queue
+        self.__threads.join_queue()
+
+        # Start post processing
+        for f in self.__post_process:
+            self.__threads.enqueue(f)
+        self.__post_process = []
+
         # Close threads ###########################
         self.__kill_threads(self.__threads)
         logging.info("Files downloaded: " + str(self.__fcount))
-        logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
+        if self.__failed > 0:
+            logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
 
 
 def help() -> None:
@@ -876,8 +910,12 @@ def main() -> None:
                 folder = os.path.abspath(sys.argv[pointer + 1])
                 if not folder[len(folder) - 1] == '\\':
                     folder += '\\'
-                pointer += 2
+
                 logging.info("FOLDER -> " + folder)
+                if not os.path.exists(folder):
+                    logging.critical("FOLDER Path does not exist, terminating program!!!")
+                    return
+                pointer += 2
             elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2

@@ -589,7 +589,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
 
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "Abbie Gonzalez")), 0)
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "ie")), 1)
-        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 155)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 154)
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "めかの工場")), 138)
 
         self.KMP.close()
@@ -633,7 +633,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None, ext_blacklist=['gif'])
         self.KMP.routine(unpacked=1, url="https://kemono.party/patreon/user/881792/post/63450534")
         self.KMP.close()
-        self.assertEqual(self.getDirSz(self.tempdir + "diives/Nat The Bunny NDE by diives from Patreon  Kemono"), 1101)
+        self.assertEqual(os.stat(self.tempdir + "diives/Nat The Bunny NDE by diives from Patreon  Kemono - post__content.txt").st_size, 230)
     
 
         # All blacklisted with unpacking
@@ -660,6 +660,17 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.assertTrue(os.path.exists(self.tempdir + "soso/リクエストボックス by soso from Pixiv Fanbox  Kemono - post__comments.txt"))
         self.assertTrue(os.path.exists(self.tempdir + "soso/リクエストボックス by soso from Pixiv Fanbox  Kemono - post__content.txt"))
         self.KMP.close()
+    
+    def test_partial_unpacked_blacklist(self):
+        """
+        Tests partially unpacking a work that is empty after applying a blacklist
+        """
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None, ext_blacklist=['jpg'])
+        self.KMP.routine(unpacked=1, url="https://kemono.party/patreon/user/12281898/post/67498846")
+        self.assertTrue(os.path.exists(self.tempdir + "MANA/WIP by MANA from Patreon  Kemono - post__content.txt"))
+        self.assertFalse(os.path.exists(self.tempdir + "MANA/WIP by MANA from Patreon  Kemono"))
+        
+        self.KMP.close()
 
     def getDirSz(self, dir: str) -> int:
         """
@@ -683,6 +694,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         Return number of files in a directory
         """
         return len([name for name in os.listdir(dir) if os.path.isfile(os.path.join(dir, name))])
+
 
 
 
