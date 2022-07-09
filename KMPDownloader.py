@@ -28,7 +28,8 @@ Using multithreading
 - Better logging filename reflecting human readable UTC time
 - Fixed issues where zip file check checked more than the extension
 - Post file check for partial unpack
-- TODO Set HTTP codes to retry
+- Set HTTP codes to retry
+- Extracted files now saved to their own file (similar to extract file option in 7z)
 
 @author Jeff Chen
 @version 0.5.3
@@ -65,13 +66,14 @@ class KMP:
     """
     Kemono.party downloader class
     """
-    __folder: str
-    __unzip: bool
-    __tcount: int
-    __chunksz: int
-    __threads:ThreadPool
-    __session:requests.Session
-    __unpacked:bool
+    __folder: str               # Folder to download files to
+    __unzip: bool               # Unzipping flag
+    __tcount: int               # Thread count
+    __chunksz: int              # Size of chunks to download in
+    __threads:ThreadPool        # Threadpool with tcount threads
+    __session:requests.Session  # requests session downloader
+    __unpacked:bool             # Unpacked download type flag
+    __http_codes:list[int]      # HTTP codes to retry on
 
     __CONTAINER_PREFIX = "https://kemono.party"
     __register:HashTable   # Registers a directory, combats multiple posts using the same name
@@ -83,7 +85,7 @@ class KMP:
     __timeout:int
     __post_process:list
 
-    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1) -> None:
+    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1, http_codes:list[int] = None) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -94,6 +96,7 @@ class KMP:
             chunksz: Download chunk size, default is 1024 * 1024 * 64
             ext_blacklist: List of file extensions to skips, does not contain '.' and no spaces
             timeout: Max retries, default is infinite (-1)
+            http_codes: Codes to retry downloads for 
         """
         if folder:
             self.__folder = folder
@@ -107,6 +110,12 @@ class KMP:
         self.__failed = 0
         self.__failed_mutex = Lock()
         self.__post_process = []
+        
+        if not http_codes or len(http_codes) == 0:
+            self.__http_codes = [429, 403]
+        else:
+            self.__http_codes = http_codes
+        
         if tcount and tcount > 0:
             self.__tcount = tcount
         else:
@@ -163,7 +172,7 @@ class KMP:
                 r = self.__session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
-                    if r.status_code == 429 or r.status_code == 403:
+                    if r.status_code in self.__http_codes:
                         if timeout == self.__timeout:
                             logging.critical("Reached maximum timeout, writing error to log")
                             jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
@@ -242,7 +251,11 @@ class KMP:
 
             # Unzip file if specified
             if self.__unzip and zipextracter.supported_zip_type(fname):
-                zipextracter.extract_zip(fname, fname.rpartition('\\')[0] + '\\', temp=True)
+                p = fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                          fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
+                if not os.path.exists(p):
+                    os.mkdir(p)
+                zipextracter.extract_zip(fname, p, temp=True)
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -869,6 +882,7 @@ def help() -> None:
     logging.info("-t <#> : Change download thread count (default is 6)")
     logging.info("-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack")   
     logging.info("-r <#> : Maximum number of retries, default is infinite") 
+    logging.info("-z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403") 
     logging.info("-h : Help")
 
 
@@ -890,6 +904,7 @@ def main() -> None:
     excluded:list = []
     retries = -1
     partial_unpack = False
+    http_codes = []
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -934,6 +949,12 @@ def main() -> None:
                     excluded.append(ext.strip())
                 pointer += 2
                 logging.info("EXCLUDED -> " + str(excluded))
+            elif sys.argv[pointer] == '-z' and len(sys.argv) >= pointer:
+                
+                for ext in sys.argv[pointer + 1].split(','):
+                    http_codes.append(int(ext.strip()))
+                pointer += 2
+                logging.info("HTTP CODES -> " + str(http_codes))
             elif sys.argv[pointer] == '-s':
                 if not unpacked:
                     partial_unpack = True
@@ -948,7 +969,7 @@ def main() -> None:
 
     # Run the downloader
     if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes)
         if unpacked:
             downloader.routine(urls, 2)
         elif partial_unpack:
