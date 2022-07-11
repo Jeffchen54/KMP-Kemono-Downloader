@@ -30,12 +30,20 @@ Using multithreading
 - Post file check for partial unpack
 - Set HTTP codes to retry
 - Extracted files now saved to their own file (similar to extract file option in 7z)
+- Extracted dupe file handling made much more robust
+- Now deletes empty extracted folder if an error occured while extracting a zip
+- TODO various omittion switches (post content, comments, images, attachments)
+- TODO post name based exclusion
+- TODO Link exclusion
+- TODO maintain server fname switch
+- TODO record extraction error to log
+- TODO logging switch
 
 @author Jeff Chen
 @version 0.5.3
-@last modified 6/21/2022
+@last modified 7/10/2022
 """
-HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36', "cookie":"__ddg1_=0PwFIPlOEttVQ9wrP7a1"}
+HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'}
 counter = 0
 now = datetime.now(tz = timezone.utc)
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -81,11 +89,12 @@ class KMP:
     __fcount_mutex:Lock   # Mutex for fcount 
     __failed:int  # Number of downloaded files
     __failed_mutex:Lock   # Mutex for fcount     
+    __post_name_exclusion:list[str] # Keywords in excluded posts
     __ext_blacklist:HashTable
     __timeout:int
     __post_process:list
 
-    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1, http_codes:list[int] = None) -> None:
+    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[]) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -97,6 +106,7 @@ class KMP:
             ext_blacklist: List of file extensions to skips, does not contain '.' and no spaces
             timeout: Max retries, default is infinite (-1)
             http_codes: Codes to retry downloads for 
+            post_name_exclusion: keywords in excluded posts
         """
         if folder:
             self.__folder = folder
@@ -110,6 +120,7 @@ class KMP:
         self.__failed = 0
         self.__failed_mutex = Lock()
         self.__post_process = []
+        self.__post_name_exclusion = post_name_exclusion
         
         if not http_codes or len(http_codes) == 0:
             self.__http_codes = [429, 403]
@@ -436,11 +447,18 @@ class KMP:
                     logging.debug("Connection timeout")
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
+        
 
         # Create a new directory if packed or use artist directory for unpacked
         work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
              ).split("\\")[0]
         backup = work_name + " - "
+        
+        # Check if a post is excluded
+        for keyword in self.__post_name_exclusion:
+            if keyword in work_name.lower():
+                logging.debug("Excluding {post}, kword: {kword}".format(post=work_name, kword=keyword) )
+                return
         
         # If not unpacked, need to consider if an existing dir exists
         if self.__unpacked < 2:
@@ -883,6 +901,7 @@ def help() -> None:
     logging.info("-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack")   
     logging.info("-r <#> : Maximum number of retries, default is infinite") 
     logging.info("-z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403") 
+    logging.info("-p \"keyword1, keyword2,...\" : Keyword in excluded posts, not case sensitive")
     logging.info("-h : Help")
 
 
@@ -905,6 +924,7 @@ def main() -> None:
     retries = -1
     partial_unpack = False
     http_codes = []
+    post_excluded = []
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -949,6 +969,13 @@ def main() -> None:
                     excluded.append(ext.strip())
                 pointer += 2
                 logging.info("EXCLUDED -> " + str(excluded))
+            elif sys.argv[pointer] == '-p' and len(sys.argv) >= pointer:
+                 
+                for ext in sys.argv[pointer + 1].split(','):
+                    post_excluded.append(ext.strip().lower())
+                pointer += 2
+                logging.info("EXCLUDED POST KEYWORDS -> " + str(post_excluded))
+            
             elif sys.argv[pointer] == '-z' and len(sys.argv) >= pointer:
                 
                 for ext in sys.argv[pointer + 1].split(','):
@@ -969,7 +996,7 @@ def main() -> None:
 
     # Run the downloader
     if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded)
         if unpacked:
             downloader.routine(urls, 2)
         elif partial_unpack:

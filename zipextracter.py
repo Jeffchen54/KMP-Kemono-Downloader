@@ -30,33 +30,49 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
         """
         Extracts a zip file to a destination. Does nothing if file
         is password protected. Zipfile is deleted if extraction is 
-        successfiul
+        successful
+        
+        Cases: 
+            (1) Unzip directory does not exists ->  Extract to directory
+            (2) Unzip directory exists but size does not match extracted dir -> Extracted dir prepended with (#)
+            (3) Unzip directory exists and size matches -> Counted as duplicate and skips unzip directory
+            (4) Extracted files conflict with existing files -> Same as case 2
+        # Unzip directory refers to directories within a zip folder, for example
+        test.zip
+            -> animals
+            -> dog1.jpg
+            -> cat1.png
+            
+            animals is a directory, this is an unzip directory
 
         Param:
         unzip: full path to zip file included zip file itself
         destpath: full path to destination
         temp: True to extract to a temp dir then moving the files to destpath, false to extract
-            directly to destpath.
-        Pre: Is a zip file, can be checked using supported_zip_type()
+            directly to destpath. TODO implement.
+        Pre: Is a zip file, can be checked using supported_zip_type(). destpath exists
         """
+        destpath += '\\'
+        backup_destpath = destpath
+        
         # A tempdir is used to bypass Window's 255 char limit when unzipping files
         with tempfile.TemporaryDirectory(prefix="temp") as dirpath:
+            dirpath += '\\'
             try:
-                patoolib.extract_archive(zippath, outdir=dirpath + '/', verbosity=-1, interactive=False)
+                patoolib.extract_archive(zippath, outdir=dirpath + '\\', verbosity=-1, interactive=False)
 
                 for f in os.listdir(dirpath):
-                    if os.path.isdir(os.path.abspath(dirpath + "/" + f)):
+                    if os.path.isdir(os.path.abspath(dirpath + f)):
                         downloaded = False
-                        destpath += '/'
                         while not downloaded:
                             try:
-                                shutil.copytree(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + f), dirs_exist_ok=False)
+                                shutil.copytree(os.path.abspath(dirpath + f), os.path.abspath(destpath + f), dirs_exist_ok=False)
                                 downloaded = True
                             except FileExistsError as e:
-                                # If duplicate file/dir is found, it will be stashed in the same dir but with (n) prepended 
+                                # If duplicate dir is found, it will be stashed in the same dir but with (n) prepended 
                                 counter = 1
                                 nextName = e.filename
-                                currSz = jutils.getDirSz(os.path.abspath(dirpath + "/" + f.replace("\\", "")))
+                                currSz = jutils.getDirSz(os.path.abspath(dirpath + f.replace("\\", "")))
                                 # Check directory size of dirpath vs destpath, if same size, we are done
                                 done = False
                                 while(not done):
@@ -77,16 +93,23 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
                                         counter += 1
 
                                 # Move files from dupe directory to new directory
-                        shutil.rmtree(os.path.abspath(dirpath + "/" + f), ignore_errors=True)
+                        shutil.rmtree(os.path.abspath(dirpath + f), ignore_errors=True)
+                        
                     else:
-                        shutil.copy(os.path.abspath(dirpath + "/" + f), os.path.abspath(destpath + "/" + f))
-                        os.remove(os.path.abspath(dirpath + "/" + f))
+                        shutil.copy(os.path.abspath(dirpath + f), os.path.abspath(destpath + f))
+                        os.remove(os.path.abspath(dirpath + f))
+                    
+                    # Reset destpath as it may have been modified due to dupe files
+                    destpath = backup_destpath
 
                 os.remove(zippath)
             except util.PatoolError as e:
-                logging.critical("Unzipping a non zip file has occured or character limit for path has been reached or zip is password protected" +
+                logging.critical("Unzipping a non zip file has occured, failure is described below:" +
                                 "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
                 logging.critical(e)
+                d = os.listdir(zippath)
+                if len(d) == 0:
+                    os.remove(zippath)
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
                             "File size: " + str(os.stat(zippath).st_size))

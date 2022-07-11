@@ -589,7 +589,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
 
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "Abbie Gonzalez")), 0)
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "ie")), 1)
-        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 154)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 156)
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "めかの工場")), 138)
 
         self.KMP.close()
@@ -671,7 +671,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.assertFalse(os.path.exists(self.tempdir + "MANA/WIP by MANA from Patreon  Kemono"))
         
         self.KMP.close()
-
+    
     def getDirSz(self, dir: str) -> int:
         """
         Returns directory and its content size
