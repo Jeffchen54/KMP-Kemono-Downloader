@@ -132,7 +132,21 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
 These bugs were accounted for but not enough testing has been conducted
   
 None
- 
+
+## Changelog 0.5.3:
+- Pre existing download folder check
+- Better logging filename reflecting human readable UTC time
+- Fixed issues where zip file check checked more than the extension
+- Post file check for partial unpack
+- Set HTTP codes to retry
+- Extracted files now saved to their own file (similar to extract file option in 7z), prevents certain file overwrite situations
+- Extracted dupe file handling made much more robust
+- Now deletes empty extracted folder if an error occured while extracting a zip
+- post name based exclusion
+- Link exclusion
+- maintain server fname switch
+- Organized switches and made logging prefix more useful
+
 ## Changelog 0.5.2:
 - HTML 429 retry and config timeout
 - Improved error messages

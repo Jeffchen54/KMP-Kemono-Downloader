@@ -97,7 +97,7 @@ class KMP:
     __post_process:list
     __download_server_name_type:bool
 
-    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist: list[str] | None, timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
+    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = []) -> None:
         """
         Initializes all variables. Does not run the program
@@ -919,29 +919,27 @@ def help() -> None:
     """
     Displays help information on invocating this program
     """    
-    logging.info("DOWNLOAD CONFIG - How files are downloaded")
-    logging.info("-f <textfile.txt> : Bulk download from text file containing links")
-    logging.info("-d <path> : REQUIRED - Set download path for single instance, must use '\\'")
-    logging.info("-c <#> : Adjust download chunk size in bytes (Default is 64M)")
-    logging.info("-t <#> : Change download thread count (default is 6)")
+    logging.info("DOWNLOAD CONFIG - How files are downloaded\n\
+        -f <textfile.txt> : Bulk download from text file containing links\n\
+        -d <path> : REQUIRED - Set download path for single instance, must use '\\'\n\
+        -c <#> : Adjust download chunk size in bytes (Default is 64M)\n\
+        -t <#> : Change download thread count (default is 6)\n")
     
-    logging.info("\nEXCLUSION - Exclusion of specific downloads")
-    logging.info("-x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s")
-    logging.info("-p \"keyword1, keyword2,...\" : Keyword in excluded posts, not case sensitive")
-    logging.info("-l \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target")
+    logging.info("EXCLUSION - Exclusion of specific downloads\n\
+        -x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
+        -p \"keyword1, keyword2,...\" : Keyword in excluded posts, not case sensitive\n\
+        -l \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n")
     
-    logging.info("\nDOWNLOAD FILE STRUCTURE - How to organize downloads")
-    logging.info("-s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files")
-    logging.info("-u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack")   
-    logging.info("-e : Download server name instead of program defined naming scheme")
-    logging.info("-v : Enables unzipping of files automatically")
+    logging.info("DOWNLOAD FILE STRUCTURE - How to organize downloads\n\
+        -s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files\n\
+        -u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
+        -e : Download server name instead of program defined naming scheme\n\
+        -v : Enables unzipping of files automatically\n")
     
-    logging.info("\nTROUBLESHOOTING - Solutions to possible issues")
-    logging.info("-z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403") 
-    logging.info("-r <#> : Maximum number of HTTP code retries, default is infinite") 
-    logging.info("-h : Help")
-
-
+    logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
+        -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
+        -r <#> : Maximum number of HTTP code retries, default is infinite\n\
+        -h : Help\n")
 
 def main() -> None:
     """
@@ -949,7 +947,8 @@ def main() -> None:
     """
     #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
     # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False

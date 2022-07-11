@@ -671,6 +671,67 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.assertFalse(os.path.exists(self.tempdir + "MANA/WIP by MANA from Patreon  Kemono"))
         
         self.KMP.close()
+            
+    def test_exclude_posts(self):
+        """
+        Tests excluding posts
+        """
+        # https://kemono.party/fanbox/user/3316400/post/488806
+        # No exclusions
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, post_name_exclusion=[])
+        self.KMP.routine("https://kemono.party/fanbox/user/3316400/post/532363", unpacked=None)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "MだSたろう\\BRSその２-高画質版2枚 by MだSたろう from Pixiv Fanbox  Kemono")), 4)
+        self.KMP.close()
+        
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, post_name_exclusion=["Nothing"])
+        self.KMP.routine("https://kemono.party/fanbox/user/3316400/post/490300", unpacked=None)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "MだSたろう\\限定褐色 by MだSたろう from Pixiv Fanbox  Kemono")), 4)        
+        self.KMP.close()
+        
+        # Exclusions
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, post_name_exclusion=["August"])
+        self.KMP.routine("https://kemono.party/gumroad/user/trylsc", unpacked=None)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "TRYLSC")), 0)        
+        self.KMP.close()
+        
+
+    def test_exclude_link(self):
+        """
+        Tests excluding links
+        """
+        # No exclusions
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, link_name_exclusion=[])
+        self.KMP.routine("https://kemono.party/gumroad/user/2986488497406/post/bMhu", unpacked=None)
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "burningtides\Phuture Noize - A New Day Remake  FLP  Presets by burningtides from Gumroad  Kemono\Phuture-Noize---A-New-Day-Remake-.zip")))
+        self.KMP.close()
+        
+        # Some exclusions
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, link_name_exclusion=["19","18"])
+        self.KMP.routine("https://kemono.party/gumroad/user/5646205703539/post/xIMAi", unpacked=None)
+        self.assertFalse(os.path.exists(os.path.join(self.tempdir, "Pitiwazou - Cédric Lepiller\SPEEDSCULPT by Pitiwazou - Cédric Lepiller from Gumroad  Kemono\speedsculpt_2_80_v_0_1_19.zip")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "Pitiwazou - Cédric Lepiller\SPEEDSCULPT by Pitiwazou - Cédric Lepiller from Gumroad  Kemono\speedsculpt_2_80_v_0_1_17.zip")))
+        self.assertFalse(os.path.exists(os.path.join(self.tempdir, "Pitiwazou - Cédric Lepiller\SPEEDSCULPT by Pitiwazou - Cédric Lepiller from Gumroad  Kemono\speedsculpt_2_80_v_0_1_18.zip")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "Pitiwazou - Cédric Lepiller\SPEEDSCULPT by Pitiwazou - Cédric Lepiller from Gumroad  Kemono\speedsculpt_2_83_v_0_1_20.zip")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "Pitiwazou - Cédric Lepiller\SPEEDSCULPT by Pitiwazou - Cédric Lepiller from Gumroad  Kemono\speedsculpt_2_9_v_0_1_22.zip")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "Pitiwazou - Cédric Lepiller\SPEEDSCULPT by Pitiwazou - Cédric Lepiller from Gumroad  Kemono\speedsculpt_2_79_v_0_1_9.zip")))
+        self.KMP.close()
+        
+        # All excluded
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, link_name_exclusion=["sfm"])
+        self.KMP.routine("https://kemono.party/gumroad/user/6791944931428/post/nYFnj", unpacked=None)
+        self.assertFalse(os.path.exists(os.path.join(self.tempdir, "Bluejuicyjuice\\18 Nidoqueen SFM model by Bluejuicyjuice from Gumroad  Kemono\\NidoSFM.7z")))
+        self.KMP.close()     
+        
+    def test_server_name(self):
+        """
+        Tests downloading of server name
+        """
+        # Mp4 and images
+        self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, download_server_name_type=True)
+        self.KMP.routine("https://kemono.party/fanbox/user/49494721/post/4072005", unpacked=None)
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "soso\胡桃Live2Dアニメ by soso from Pixiv Fanbox  Kemono\\b7e05408-ffe7-451a-b3bf-850f3511faec.jpg")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "soso\胡桃Live2Dアニメ by soso from Pixiv Fanbox  Kemono\\胡桃_Live2D.mp4")))
+        self.KMP.close()     
     
     def getDirSz(self, dir: str) -> int:
         """
