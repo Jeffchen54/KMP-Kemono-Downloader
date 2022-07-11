@@ -46,22 +46,40 @@ file unzipping or are not going to unzip password protected zip files.
 - Enjoy!
 
 ## Command line arguments:
--f <textfile.txt> : Download from text file containing links
+DOWNLOAD CONFIG - How files are downloaded
+
+-f <textfile.txt> : Bulk download from text file containing links
 
 -d <path> : REQUIRED - Set download path for single instance, must use '\'
-    
+
 -c <#> : Adjust download chunk size in bytes (Default is 64M)
-    
--x "txt, zip, ..., png" : Exclude files with listed extensions, NO '.'s
-    
--s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files
-    
+
 -t <#> : Change download thread count (default is 6)
-    
+
+EXCLUSION - Exclusion of specific downloads
+
+-x "txt, zip, ..., png" : Exclude files with listed extensions, NO '.'s
+
+-p "keyword1, keyword2,..." : Keyword in excluded posts, not case sensitive
+
+-l "keyword1, keyword2,..." : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target
+
+DOWNLOAD FILE STRUCTURE - How to organize downloads
+
+-s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files
+
 -u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack
 
--r <#> : Maximum number of retries for HTTP 429 error, default is infinite
-    
+-e : Download server name instead of program defined naming scheme
+
+-v : Enables unzipping of files automatically
+
+TROUBLESHOOTING - Solutions to possible issues
+
+-z "500, 502,..." : HTTP codes to retry downloads on, default is 429 and 403
+
+-r <#> : Maximum number of HTTP code retries, default is infinite
+
 -h : Help
 
  Default file organization is packed, all works will have their own folder within an artist folder.
