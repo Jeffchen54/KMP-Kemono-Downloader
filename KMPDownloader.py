@@ -37,6 +37,7 @@ Using multithreading
 - Link exclusion
 - maintain server fname switch
 - Organized switches
+- Fix edge case where \ is at the end of the download folder string
 - TODO record extraction error to log
 - TODO logging switch
 
@@ -985,7 +986,10 @@ def main() -> None:
                 logging.info("UNPACKED -> TRUE")
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
                 folder = os.path.abspath(sys.argv[pointer + 1])
-                if not folder[len(folder) - 1] == '\\':
+
+                if folder[len(folder) - 1] == '\"':
+                    folder = folder[:len(folder) - 1] + '\\'
+                elif not folder[len(folder) - 1] == '\\':
                     folder += '\\'
 
                 logging.info("FOLDER -> " + folder)

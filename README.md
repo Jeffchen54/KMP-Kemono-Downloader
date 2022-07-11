@@ -164,6 +164,7 @@ None
 - Link exclusion
 - maintain server fname switch
 - Organized switches and made logging prefix more useful
+- Fix edge case where \ is at the end of the download folder string
 
 ## Changelog 0.5.2:
 - HTML 429 retry and config timeout
