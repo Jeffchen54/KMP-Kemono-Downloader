@@ -697,7 +697,5 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
 
 
 
-
-
 if __name__ == '__main__':
     unittest.main()
