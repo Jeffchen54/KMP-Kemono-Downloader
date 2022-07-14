@@ -1,5 +1,8 @@
 # KMPDownloader
 Simple Kemono.party downloader
+
+*Next Update will be delayed, working to get all the bugs sweeped up in preparation for a massive update coming afterwards.*
+
 Ran and built in Windows 10 with Visual Studios on Python 3.10
 Functionality not guaranteed until 1.0, There are known bugs!
 Can download everything from Files, save text and links in Content, and everything in Downloads. Can be set to automatically unzip files if they contain no password.
@@ -18,6 +21,7 @@ View changelog for more details on features not included here.
 - Extraction of a work's content and comments*.
 - Queuing system, download multiple URLs without user input
 - Multhreading support, significant download speed bonus.
+- Ease of use, cookies are for eating only!  
 
 *Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
 
