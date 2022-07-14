@@ -24,20 +24,7 @@ import zipextracter
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Pre existing download folder check
-- Better logging filename reflecting human readable UTC time
-- Fixed issues where zip file check checked more than the extension
-- Post file check for partial unpack
-- Set HTTP codes to retry
-- Extracted files now saved to their own file (similar to extract file option in 7z)
-- Extracted dupe file handling made much more robust
-- Now deletes empty extracted folder if an error occured while extracting a zip
 - TODO various omittion switches (post content, comments, images, attachments)
-- post name based exclusion
-- Link exclusion
-- maintain server fname switch
-- Organized switches
-- Fix edge case where \ is at the end of the download folder string
 - TODO record extraction error to log
 - TODO logging switch
 
