@@ -1,3 +1,4 @@
+from queue import Queue
 import shutil
 from threading import Lock
 import requests
@@ -308,7 +309,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None) -> int:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, enqueue:bool=False) -> Queue:
         """
         Puts all urls in imgLinks into download queue
 
@@ -316,12 +317,17 @@ class KMP:
         imgLinks: all image links within a container
         dir: where to save the images
         base_name: Prefix to name files, None for just counter
+        enqueue: Whether to queue to task or not
         
-        Raise: DeadThreadPoolException when no download threads are available
-        Return number of files queued
+        Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
+        Return Task in the format (self.__download_file, (src, fname)) where download_file is 
+                the function used to download the file, src is the file src, and fname is what to
+                name the downloaded file
         """
-        downcount = 0
-        if not self.__threads.get_status():
+        task_list:Queue = None
+        if not enqueue:
+            task_list = Queue()
+        if not self.__threads.get_status() and enqueue:
             raise DeadThreadPoolException
         
         if not base_name:
@@ -367,11 +373,12 @@ class KMP:
                 else:   # If not registered, add to register at value 1
                     self.__register.hashtable_add(KVPair[str, int](fname, 1))
                 
-                
-                self.__threads.enqueue((self.__download_file, (src, fname)))
+                if enqueue:
+                    self.__threads.enqueue((self.__download_file, (src, fname)))
+                else:
+                    task_list.put_nowait((self.__download_file, (src, fname)))
                 counter += 1
-                downcount += 1
-        return downcount
+        return task_list
 
     def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
         """
@@ -410,7 +417,7 @@ class KMP:
 
             
 
-    def __process_container(self, url: str, root: str) -> None:
+    def __process_container(self, url: str, root: str, get_list:bool=False) -> Queue:
         """
         Processes a container which is the page used to store post content
 
@@ -422,12 +429,20 @@ class KMP:
         Param:
         url: url of the container
         root: directory to store the content
+        get_list: Returns a list of tasks task instead of directly processing the tasks if true. Tasks are downloaded content
         
-        Raise: DeadThreadPoolException when no download threads are available
+        Return: a task instead of directly processing the task if get_list is true
+        Raise: DeadThreadPoolException when no download threads are available, ignored if get_list is true
         """
         logging.debug("Processing: " + url + " to be stored in " + root)
-        if not self.__threads.get_status():
-            raise DeadThreadPoolException
+        task_list:Queue = None
+        
+        if get_list:
+            task_list = Queue(0)
+        
+        if not get_list:
+            if not self.__threads.get_status():
+                raise DeadThreadPoolException
 
         # Get HTML request and parse the HTML for image links and title ############
         reqs = None
@@ -489,7 +504,13 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        self.__queue_download_files(imgLinks, titleDir, work_name)
+        
+        task = self.__queue_download_files(imgLinks, titleDir, work_name, enqueue=not get_list)
+        
+        if get_list:
+            while not task.empty():
+                task_list.put_nowait(task.get_nowait())
+        
         # Link type
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
 
@@ -511,8 +532,11 @@ class KMP:
                             fd.write("\n" + hr)
                 
             # Image Section
-            self.__queue_download_files(content.find_all('img'), titleDir, work_name)
+            task = self.__queue_download_files(content.find_all('img'), titleDir, work_name, enqueue=not get_list)
 
+            if get_list:
+                while not task.empty():
+                    task_list.put_nowait(task.get_nowait())
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
@@ -535,8 +559,10 @@ class KMP:
                             fname = split[0] + "(" + str(value) + ")." + split[2]
                         else:   # If not registered, add to register at value 1
                             self.__register.hashtable_add(KVPair[str, int](fname, 1))
-
-                        self.__threads.enqueue((self.__download_file, (src, fname)))
+                        if get_list:
+                            task_list.put_nowait((self.__download_file, (src, fname)))
+                        else:
+                            self.__threads.enqueue((self.__download_file, (src, fname)))
         
         global counter
         counter = 0
@@ -554,6 +580,8 @@ class KMP:
         # Add to post process queue if partial unpack is on
         if self.__unpacked == 1:
             self.__post_process.append((self.__partial_unpack_post_process, (titleDir, root + backup)))
+        
+        return task_list
     
     def __exclusion_check(self, tokens:list[str], target:str)->bool:
         """
@@ -593,15 +621,22 @@ class KMP:
         shutil.rmtree(src)    
         return
 
-    def __process_window(self, url: str, continuous: bool) -> None:
+    def __process_window(self, url: str, continuous: bool, get_list:bool=False) -> Queue:
         """
         Processes a single main artist window, a window is a page where multiple artist works can be seen
 
         Param: 
             url: url of the main artist window
-            continuous: True to attempt to visit next pages of content, False to not 
+            continuous: True to attempt to visit next pages of content, False to not
+            get_list: Return a list of tasks instead of processing the data immediately
+        Return: If get_list is true, a list of tasks needed to process the data is returned. 
         """
+        
         reqs = None
+        task_list:Queue = None
+        
+        if get_list:
+            task_list = Queue(0)
         # Make a connection
         while not reqs:
             try:
@@ -626,9 +661,12 @@ class KMP:
             # Process all links on page
             for link in contLinks:
                 content = link.find("a")
-                self.__process_container(
-                    self.__CONTAINER_PREFIX + content.get('href'), titleDir)
-
+                q = self.__process_container(
+                    self.__CONTAINER_PREFIX + content.get('href'), titleDir, get_list=get_list)
+                # TODO create dedicated method which automatically adds to a Queue to prevent combining 2 queues
+                if get_list:
+                    while not q.empty():
+                        task_list.put_nowait(q.get_nowait())
             if continuous:
                 # Move to next window
                 counter += 25
@@ -643,6 +681,8 @@ class KMP:
                 contLinks = soup.find_all("div", class_="post-card__link")
             else:
                 contLinks = None
+
+        return task_list
 
 
     def __download_discord_js(self, jsList:dict, titleDir:str) -> list[str]:
@@ -771,7 +811,7 @@ class KMP:
             # Process server
             self.__process_discord_server(s, dir)
 
-    def __call_and_interpret_url(self, url: str) -> None:
+    def __call_and_interpret_url(self, url: str, get_list:bool=False) -> Queue|None:
         """
         Calls a function based on url type
         https://kemono.party/fanbox/user/xxxx -> process_window()
@@ -783,9 +823,12 @@ class KMP:
 
         Param:
             url: url to process
+            get_list: True to return a queue of task instead of directly processing the url's download
+        Return: Queue of tasks, None if task_list is false
         Raise:
             UnknownURLTypeException when url type cannot be determined
         """
+        task_list = None
         # For single window page, we can process it directly since we don't have to flip to next pages
         if '?' in url:
             self.__process_window(url, False)
@@ -808,20 +851,22 @@ class KMP:
                 os.makedirs(titleDir)
             reqs.close()
             # Process container
-            self.__process_container(url, titleDir)
+            self.__process_container(url, titleDir, get_list=get_list)
 
         # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
-            self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\")
+            task_list = self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\")
 
         # For multiple window pages
         elif 'user' in url:
-            self.__process_window(url, True)
+            task_list = self.__process_window(url, True, get_list=get_list)
         # Not found, we complain
         else:
             logging.critical("Unknown URL -> " + url)
             # WRITETOLOG
             raise UnknownURLTypeException
+    
+        return task_list
 
     def __create_threads(self, count: int) -> ThreadPool:
         """
@@ -848,6 +893,75 @@ class KMP:
         threads.join_queue()
         threads.kill_threads()
 
+    def alt_routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
+        """
+        Basically the same as routine but uses an experimental routine to be used in a future development
+        
+        Main routine, processes an 3 kinds of artist links specified in the project spec.
+        if url is None, ask for a url.
+
+        Param:
+        url: supported url(s), if single string, process single url, if list, process multiple
+            urls. If None, ask user for a url
+        unpacked: Whether or not to pack contents tightly or loosely, default is tightly packed.
+            Levels 0 -> no unpacking, 1 -> partial unpacking, 2 -> unpack all
+        """
+        if unpacked is None:
+            self.__unpacked = 0
+        else:
+            self.__unpacked = unpacked
+
+
+        # Generate threads #########################
+        self.__threads = self.__create_threads(self.__tcount)
+
+        queue_list:list = []
+        
+        # Get url to download ######################
+        # List type url
+        if isinstance(url, list):
+            for line in url:
+                line = line.strip()
+                if len(line) > 0:
+                    logging.info("Fetching, please wait...")
+                    queue_list.append(self.__call_and_interpret_url(line, get_list=True))
+
+        # User input url
+        else:
+            while not url or "https://kemono.party" not in url:
+                url = input("Input a url, or type 'quit' to exit> ")
+
+                if(url == 'quit'):
+                    self.__kill_threads(self.__threads)
+                    return
+            logging.info("Fetching, please wait...")
+            queue_list.append(self.__call_and_interpret_url(url, get_list=True))
+        
+        
+        # Process the task_list
+        for task_list in queue_list:
+            logging.info("Number of files to be downloaded -> {fnum}".format(fnum=str(task_list.qsize())))
+        
+        # Enqueue into threadpool
+        self.__threads.enqueue_queue(task_list=task_list)
+        
+        # Wait for task_list is joined
+        for task_list in queue_list:
+            task_list.join()
+        logging.info("JOINED")
+        # Wait for queue
+        self.__threads.join_queue()
+
+        # Start post processing
+        for f in self.__post_process:
+            self.__threads.enqueue(f)
+        self.__post_process = []
+
+        # Close threads ###########################
+        self.__kill_threads(self.__threads)
+        logging.info("Files downloaded: " + str(self.__fcount))
+        if self.__failed > 0:
+            logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
     def routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
         """
         Main routine, processes an 3 kinds of artist links specified in the project spec.
@@ -927,7 +1041,8 @@ def help() -> None:
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
         -r <#> : Maximum number of HTTP code retries, default is infinite\n\
-        -h : Help\n")
+        -h : Help\n\
+        -EXPERIMENTAL : Enable experimental mode\n")
 
 def main() -> None:
     """
@@ -951,6 +1066,7 @@ def main() -> None:
     post_excluded = []
     server_name = False
     link_excluded = []
+    experimental = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -962,6 +1078,10 @@ def main() -> None:
                 unzip = True
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
+            elif sys.argv[pointer] == '-EXPERIMENTAL':
+                experimental = True
+                pointer += 1
+                logging.info("EXPERIMENTAL -> " + str(experimental))
             elif sys.argv[pointer] == '-e':
                 server_name = True
                 pointer += 1
@@ -1036,12 +1156,21 @@ def main() -> None:
     # Run the downloader
     if folder:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded)
-        if unpacked:
-            downloader.routine(urls, 2)
-        elif partial_unpack:
-            downloader.routine(urls, 1)
+        
+        if experimental:
+            if unpacked:
+                downloader.alt_routine(urls, 2)
+            elif partial_unpack:
+                downloader.alt_routine(urls, 1)
+            else:
+                downloader.alt_routine(urls, 0)
         else:
-            downloader.routine(urls, 0)
+            if unpacked:
+                downloader.routine(urls, 2)
+            elif partial_unpack:
+                downloader.routine(urls, 1)
+            else:
+                downloader.routine(urls, 0)
         downloader.close()
     else:
         help()

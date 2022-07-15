@@ -99,10 +99,6 @@ class Kill_Queue():
         Return: queue size
         """
         return self.__queue.qsize()
-    
-
-
-    
 
 
 
@@ -166,6 +162,21 @@ class ThreadPool():
         """
         logging.debug("Enqueued into task queue: " + str(task))
         self.__task_queue.enqueue(task)
+        
+    def enqueue_queue(self, task_list:queue.Queue) -> None:
+        """
+        Put an queue in task queue. Each queue element will be 'get()' and then
+        task_done()
+
+        Param:
+            task_list: queue of task tuples following the structure (func(),(args1,args2,...))
+        """
+        logging.debug("Enqueued into task queue: " + str(task_list))
+        size = task_list.qsize()
+        logging.info(size)
+        for i in (0,size):
+            self.__task_queue.enqueue(task_list.get())
+            logging.info("ENQUEUE")
     
     def join_queue(self) -> None:
         """
@@ -226,6 +237,15 @@ class ThreadPool():
 
                 # Pop queue and download it
                 todo = self.__task_queue.dequeue()
-                logging.debug(tname.name + " Processing: " + str(todo))
-                todo[0](*todo[1])
+                
+                # If dequeued element is a queue, we process it like its our queue
+                if type(todo) is queue.Queue:
+                    monitored_todo = todo.get()
+                    logging.info(tname.name + " Processing: " + str(monitored_todo))
+                    monitored_todo[0](*monitored_todo[1])
+                    todo.task_done()
+                # Else, process the task directly
+                else:
+                    logging.debug(tname.name + " Processing: " + str(todo))
+                    todo[0](*todo[1])
                 self.__task_queue.task_done()
