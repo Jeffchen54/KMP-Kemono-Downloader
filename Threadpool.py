@@ -174,9 +174,8 @@ class ThreadPool():
         logging.debug("Enqueued into task queue: " + str(task_list))
         size = task_list.qsize()
         logging.info(size)
-        for i in (0,size):
-            self.__task_queue.enqueue(task_list.get())
-            logging.info("ENQUEUE")
+        for i in range(0,size):
+            self.__task_queue.enqueue(task_list)
     
     def join_queue(self) -> None:
         """
@@ -241,7 +240,7 @@ class ThreadPool():
                 # If dequeued element is a queue, we process it like its our queue
                 if type(todo) is queue.Queue:
                     monitored_todo = todo.get()
-                    logging.info(tname.name + " Processing: " + str(monitored_todo))
+                    logging.debug(tname.name + " (From SubQueue) Processing: " + str(monitored_todo))
                     monitored_todo[0](*monitored_todo[1])
                     todo.task_done()
                 # Else, process the task directly

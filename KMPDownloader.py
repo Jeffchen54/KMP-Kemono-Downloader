@@ -893,6 +893,18 @@ class KMP:
         threads.join_queue()
         threads.kill_threads()
 
+    def monitor_queue(q:Queue, resp:str|None=None):
+        """
+        Block until q is joined, displays resp afterwards 
+
+        Args:
+            q (Queue): q to block until joined
+        """
+        q.join()
+        if resp:
+            logging.info(resp)
+    
+    
     def alt_routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
         """
         Basically the same as routine but uses an experimental routine to be used in a future development
@@ -942,8 +954,16 @@ class KMP:
         for task_list in queue_list:
             logging.info("Number of files to be downloaded -> {fnum}".format(fnum=str(task_list.qsize())))
         
-        # Enqueue into threadpool
-        self.__threads.enqueue_queue(task_list=task_list)
+        # TODO Enqueue into threadpool
+        # Create a threadpool to keep track of which artist works are completed.
+        task_threads = ThreadPool(6)
+        if isinstance(url, str):
+            task_threads.enqueue((self.monitor_queue, ("{url} is completed".format(url=url),)))
+            self.__threads.enqueue_queue(task_list=task_list)
+        else:    
+            for i, task_list in enumerate(queue_list):
+                task_threads.enqueue(("{url} is completed".format(url=url[i])))
+                self.__threads.enqueue_queue(task_list=task_list)
         
         # Wait for task_list is joined
         for task_list in queue_list:
