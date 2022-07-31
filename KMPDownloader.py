@@ -1,6 +1,6 @@
 from queue import Queue
 import shutil
-from threading import Lock
+from threading import Lock, Semaphore
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -21,13 +21,17 @@ from HashTable import KVPair
 from datetime import timedelta
 from Threadpool import ThreadPool
 import zipextracter
+import alive_progress
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
+- Added experimental download mode
+- Fixed several edge cases in discord attachment downloads and improved error messaging
 - TODO various omittion switches (post content, comments, images, attachments)
 - TODO record extraction error to log
 - TODO logging switch
+- TODO Advanced dupe file check with a database
 
 @author Jeff Chen
 @version 0.5.3
@@ -85,6 +89,7 @@ class KMP:
     __timeout:int
     __post_process:list
     __download_server_name_type:bool
+    __progress:Semaphore
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = []) -> None:
@@ -107,6 +112,7 @@ class KMP:
             self.__folder = folder
         else:
             raise UnspecifiedDownloadPathException
+        self.__progress = Semaphore()
         self.__register = HashTable(1000)
         self.__fcount = 0
         self.__unzip = unzip
@@ -163,7 +169,7 @@ class KMP:
         """
         self.__session.close()
 
-    def __download_file(self, src: str, fname: str) -> None:
+    def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
         """
         Downloads file at src. Skips if a file already exists sharing the same fname and size 
         Param:
@@ -187,6 +193,7 @@ class KMP:
                             self.__failed_mutex.acquire()
                             self.__failed += 1
                             self.__failed_mutex.release()
+                            self.__progress.release()
                             return
                         else:
                             timeout += 1
@@ -196,6 +203,7 @@ class KMP:
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
                         jutils.write_to_file(LOG_NAME, "{code} TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+                        self.__progress.release()
                         return
 
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
@@ -223,21 +231,29 @@ class KMP:
                              logging.debug("Connection timeout")
                             
                     # Download the file with visual bars 
-                    with open(fname, 'wb') as fd, tqdm(
-                            desc=fname,
-                            total=int(fullsize),
-                            unit='iB',
-                            unit_scale=True,
-                            leave=False,
-                            bar_format= "(" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
-                            unit_divisor=int(1024)) as bar:
-                        for chunk in data.iter_content(chunk_size=self.__chunksz):
-                            sz = fd.write(chunk)
-                            fd.flush()
-                            bar.update(sz)
-                            downloaded += sz
-                        time.sleep(1)
-                        bar.clear()
+                    if display_bar:
+                        with open(fname, 'wb') as fd, tqdm(
+                                desc=fname,
+                                total=int(fullsize),
+                                unit='iB',
+                                unit_scale=True,
+                                leave=False,
+                                bar_format= "(" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
+                                unit_divisor=int(1024)) as bar:
+                            for chunk in data.iter_content(chunk_size=self.__chunksz):
+                                sz = fd.write(chunk)
+                                fd.flush()
+                                bar.update(sz)
+                                downloaded += sz
+                            time.sleep(1)
+                            bar.clear()
+                    else:
+                        with open(fname, 'wb') as fd:
+                            for chunk in data.iter_content(chunk_size=self.__chunksz):
+                                sz = fd.write(chunk)
+                                fd.flush()
+                                downloaded += sz
+                            time.sleep(1)
 
                     # Checks if the file is correctly downloaded, if so, we are done
                     if(os.stat(fname).st_size == int(fullsize)):
@@ -264,6 +280,7 @@ class KMP:
                 if not os.path.exists(p):
                     os.mkdir(p)
                 zipextracter.extract_zip(fname, p, temp=True)
+        self.__progress.release()
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -309,7 +326,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, enqueue:bool=False) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, get_list:bool=False) -> Queue:
         """
         Puts all urls in imgLinks into download queue
 
@@ -325,9 +342,9 @@ class KMP:
                 name the downloaded file
         """
         task_list:Queue = None
-        if not enqueue:
+        if get_list:
             task_list = Queue()
-        if not self.__threads.get_status() and enqueue:
+        elif not self.__threads.get_status():
             raise DeadThreadPoolException
         
         if not base_name:
@@ -373,10 +390,10 @@ class KMP:
                 else:   # If not registered, add to register at value 1
                     self.__register.hashtable_add(KVPair[str, int](fname, 1))
                 
-                if enqueue:
+                if not get_list:
                     self.__threads.enqueue((self.__download_file, (src, fname)))
                 else:
-                    task_list.put_nowait((self.__download_file, (src, fname)))
+                    task_list.put_nowait((self.__download_file, (src, fname, False)))
                 counter += 1
         return task_list
 
@@ -440,9 +457,8 @@ class KMP:
         if get_list:
             task_list = Queue(0)
         
-        if not get_list:
-            if not self.__threads.get_status():
-                raise DeadThreadPoolException
+        elif not self.__threads.get_status():
+            raise DeadThreadPoolException
 
         # Get HTML request and parse the HTML for image links and title ############
         reqs = None
@@ -505,7 +521,7 @@ class KMP:
         # Download all 'files' #####################################################
         # Image type
         
-        task = self.__queue_download_files(imgLinks, titleDir, work_name, enqueue=not get_list)
+        task = self.__queue_download_files(imgLinks, titleDir, work_name, get_list=get_list)
         
         if get_list:
             while not task.empty():
@@ -532,8 +548,7 @@ class KMP:
                             fd.write("\n" + hr)
                 
             # Image Section
-            task = self.__queue_download_files(content.find_all('img'), titleDir, work_name, enqueue=not get_list)
-
+            task = self.__queue_download_files(content.find_all('img'), titleDir, work_name, get_list=get_list)
             if get_list:
                 while not task.empty():
                     task_list.put_nowait(task.get_nowait())
@@ -560,12 +575,13 @@ class KMP:
                         else:   # If not registered, add to register at value 1
                             self.__register.hashtable_add(KVPair[str, int](fname, 1))
                         if get_list:
-                            task_list.put_nowait((self.__download_file, (src, fname)))
+                            task_list.put_nowait((self.__download_file, (src, fname, False)))
                         else:
                             self.__threads.enqueue((self.__download_file, (src, fname)))
         
         global counter
         counter = 0
+        
 
         # Download post comments ################################################
         if(os.path.exists(titleDir + work_name + "post__comments.txt")):
@@ -685,7 +701,7 @@ class KMP:
         return task_list
 
 
-    def __download_discord_js(self, jsList:dict, titleDir:str) -> list[str]:
+    def __download_discord_js(self, jsList:dict, titleDir:str, get_list:bool) -> list[str] | tuple:
         """
         Downloads any file found in js and returns text data
 
@@ -695,10 +711,14 @@ class KMP:
         Pre: text_file does not have data from previous runs. Data is appended so old data
                 will persist.
         Pre: titleDir exists
-        Return: Buffer containing text data
+        Return: Buffer containing text data, if get_list is true, return a tuple where text data is
+                    [0] and download data is [1]
         """
         imageDir = titleDir + "images\\"
-
+        
+        task_list = None
+        if get_list:
+            task_list = []
         # make dir
         if not os.path.isdir(imageDir):
             os.mkdir(imageDir)
@@ -726,8 +746,16 @@ class KMP:
             for e in js.get('embeds'):
 
                 if e.get('type') == "link":
-                    stringBuilder.append(e.get('title') + " -> " + e.get('url') + '\n')
-
+                    try:
+                        if e.get('title'):
+                            stringBuilder.append(e.get('title') + " -> " + e.get('url') + '\n')
+                        elif e.get('description'):
+                            stringBuilder.append(e.get('description') + " -> " + e.get('url') + '\n')
+                        else:
+                            stringBuilder.append(e.get('url') + '\n')
+                    except TypeError:
+                        logging.critical("Unidentified edge case in Discord JS scraping process has occured, details:\
+                            {info}".format(info=e))
 
             # Add attachments
             for i in js.get('attachments'):
@@ -740,14 +768,17 @@ class KMP:
                     self.__register.hashtable_add(KVPair[str, int](url, 1))
                 
                     # Download the attachment
-                    self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
+                    if get_list:
+                        task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], False)))
+                    else:
+                        self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
                     counter += 1
                 # If is on the register, do not download the attachment
 
         # Write to file
-        return stringBuilder
+        return stringBuilder if(not get_list) else (stringBuilder, task_list,)
 
-    def __process_discord_server(self, serverJs:dict, titleDir:str) -> None:
+    def __process_discord_server(self, serverJs:dict, titleDir:str, get_list:bool) -> list|None:
         """
         Process a discord server
 
@@ -756,7 +787,6 @@ class KMP:
             titleDir: Where to store discord content, absolute directory ends with '\\'
         """
         dir = titleDir + serverJs.get('name') + '\\'
-
         # Make sure a dupe directory does not exists, if so, adjust dir name
         value = self.__register.hashtable_lookup_value(dir)
         if value != None:  # If register, update titleDir and increment value
@@ -777,15 +807,22 @@ class KMP:
         # Read every json on the server and put it in queue
         discordScraper = DiscordToJson()
         js = discordScraper.discord_lookup_all(serverJs.get("id"), self.__session)
-
-        buffer = ("".join(self.__download_discord_js(js, dir)))
+        
+        data = self.__download_discord_js(js, dir, get_list=get_list)
+        toReturn = None
         # Write buffered discord text content to file
-        jutils.write_utf8("".join(buffer), dir + 'discord__content.txt', 'a')
+        if get_list:
+            buffer = ("".join(data[0]))
+            jutils.write_utf8("".join(buffer), dir + 'discord__content.txt', 'a')
+            toReturn = data[1]
+        else:
+            jutils.write_utf8("".join(data), dir + 'discord__content.txt', 'a')
         global counter
         counter = 0
+        return toReturn
 
 
-    def __process_discord(self, url:str, titleDir:str) -> None:
+    def __process_discord(self, url:str, titleDir:str, get_list:bool=False) -> list|None:
         """ 
         Process discord kemono links using multithreading
 
@@ -806,10 +843,20 @@ class KMP:
         if len(servers) == 0:
             return
         
+        task_queue = None
+        if get_list:
+            task_queue = Queue(0)
+            
         # Process each server
         for s in servers:
             # Process server
-            self.__process_discord_server(s, dir)
+            task_list = self.__process_discord_server(s, dir, get_list=get_list)
+            if get_list:
+                for task in task_list:
+                    task_queue.put_nowait(task)
+        
+        return task_queue
+                
 
     def __call_and_interpret_url(self, url: str, get_list:bool=False) -> Queue|None:
         """
@@ -851,11 +898,12 @@ class KMP:
                 os.makedirs(titleDir)
             reqs.close()
             # Process container
-            self.__process_container(url, titleDir, get_list=get_list)
+            task_list = self.__process_container(url, titleDir, get_list=get_list)
 
         # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
-            task_list = self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\")
+            task_list = self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\", get_list=get_list)
+
 
         # For multiple window pages
         elif 'user' in url:
@@ -865,7 +913,10 @@ class KMP:
             logging.critical("Unknown URL -> " + url)
             # WRITETOLOG
             raise UnknownURLTypeException
-    
+        if not task_list:
+            logging.critical("Failed")
+            logging.critical(url)
+            exit(-1)
         return task_list
 
     def __create_threads(self, count: int) -> ThreadPool:
@@ -893,7 +944,7 @@ class KMP:
         threads.join_queue()
         threads.kill_threads()
 
-    def monitor_queue(q:Queue, resp:str|None=None):
+    def monitor_queue(self, q:Queue, resp:str|None=None):
         """
         Block until q is joined, displays resp afterwards 
 
@@ -904,6 +955,19 @@ class KMP:
         if resp:
             logging.info(resp)
     
+    def __prog_bar(self, max:int):
+        """
+        Display a progress bar, will be thread will be locked until max
+        """
+        counter = 0
+        with alive_progress.alive_bar(max, title='Files Downloaded:') as bar:
+            while(counter < max):
+                # Acquire progress sem
+                self.__progress.acquire()
+                
+                # Increment counter
+                counter += 1
+                bar()
     
     def alt_routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
         """
@@ -935,7 +999,7 @@ class KMP:
             for line in url:
                 line = line.strip()
                 if len(line) > 0:
-                    logging.info("Fetching, please wait...")
+                    logging.info("Fetching {url}".format(url=line))
                     queue_list.append(self.__call_and_interpret_url(line, get_list=True))
 
         # User input url
@@ -946,39 +1010,45 @@ class KMP:
                 if(url == 'quit'):
                     self.__kill_threads(self.__threads)
                     return
-            logging.info("Fetching, please wait...")
+            logging.info("Fetching, {url}".format(url=url))
             queue_list.append(self.__call_and_interpret_url(url, get_list=True))
         
         
         # Process the task_list
+        sz = 0
         for task_list in queue_list:
-            logging.info("Number of files to be downloaded -> {fnum}".format(fnum=str(task_list.qsize())))
+            sz += task_list.qsize()
+        logging.info("Number of files to be downloaded -> {fnum}".format(fnum=str(sz)))
         
         # TODO Enqueue into threadpool
         # Create a threadpool to keep track of which artist works are completed.
         task_threads = ThreadPool(6)
+        task_threads.start_threads()
         if isinstance(url, str):
-            task_threads.enqueue((self.monitor_queue, ("{url} is completed".format(url=url),)))
+            task_list = queue_list[0]
+            task_threads.enqueue((self.monitor_queue, (task_list, "{url} is completed".format(url=url),)))
             self.__threads.enqueue_queue(task_list=task_list)
         else:    
             for i, task_list in enumerate(queue_list):
-                task_threads.enqueue(("{url} is completed".format(url=url[i])))
+                task_threads.enqueue((self.monitor_queue, (task_list, "{url} is completed".format(url=url[i]),)))
                 self.__threads.enqueue_queue(task_list=task_list)
         
+        self.__prog_bar(sz)
         # Wait for task_list is joined
         for task_list in queue_list:
             task_list.join()
-        logging.info("JOINED")
         # Wait for queue
         self.__threads.join_queue()
-
+        task_threads.join_queue()
+        
         # Start post processing
         for f in self.__post_process:
             self.__threads.enqueue(f)
         self.__post_process = []
-
+        
         # Close threads ###########################
         self.__kill_threads(self.__threads)
+        self.__kill_threads(task_threads)
         logging.info("Files downloaded: " + str(self.__fcount))
         if self.__failed > 0:
             logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))

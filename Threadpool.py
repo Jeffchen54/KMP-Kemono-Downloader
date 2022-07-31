@@ -173,7 +173,6 @@ class ThreadPool():
         """
         logging.debug("Enqueued into task queue: " + str(task_list))
         size = task_list.qsize()
-        logging.info(size)
         for i in range(0,size):
             self.__task_queue.enqueue(task_list)
     
