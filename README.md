@@ -282,3 +282,9 @@ overwritting existing files
 - GUI
 - Command line argument support for more settings
 - Automatic Gdrive and Mega download from links (Unlikely)
+- Automatic update module, updates all artists that have been downloaded
+
+# CONFIRMED COMING SOON!
+- Advanced duplicate file database. All downloaded files src recorded and matched against
+in future downloads
+- 
