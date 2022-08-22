@@ -32,8 +32,8 @@ Using multithreading
 
 
 @author Jeff Chen
-@version 0.5.3
-@last modified 7/11/2022
+@version 0.5.4
+@last modified 8/22/2022
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'}
 counter = 0
