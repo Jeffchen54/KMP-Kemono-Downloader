@@ -22,6 +22,7 @@ from datetime import timedelta
 from Threadpool import ThreadPool
 import zipextracter
 import alive_progress
+from PersistentCounter import PersistentCounter
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
@@ -324,7 +325,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, task_list:Queue|None) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, task_list:Queue|None, counter:PersistentCounter) -> Queue:
         """
         Puts all urls in imgLinks into download queue
 
@@ -345,7 +346,6 @@ class KMP:
         if not base_name:
             base_name = ""
 
-        global counter
         for link in imgLinks:
             href = link.get('href')
             # Type 1 image - Image in Files section
@@ -373,7 +373,7 @@ class KMP:
                 if self.__download_server_name_type:
                     fname = dir + base_name + self.__trim_fname(src)
                 else:
-                    fname = dir + base_name + str(counter) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                    fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
 
                 # Check if the post attachment shares the same name as another post attachemnt
                 # Adjust filename if found
@@ -389,7 +389,7 @@ class KMP:
                     self.__threads.enqueue((self.__download_file, (src, fname)))
                 else:
                     task_list.put_nowait((self.__download_file, (src, fname, False)))
-                counter += 1
+                counter.toggle()
         return task_list
 
     def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
@@ -447,7 +447,7 @@ class KMP:
         Raise: DeadThreadPoolException when no download threads are available, ignored if get_list is true
         """
         logging.debug("Processing: " + url + " to be stored in " + root)
-        
+        counter = PersistentCounter()     # Counter to name the images as 
         if not self.__threads.get_status():
             raise DeadThreadPoolException
 
@@ -512,7 +512,7 @@ class KMP:
         # Download all 'files' #####################################################
         # Image type
         
-        task = self.__queue_download_files(imgLinks, titleDir, work_name, task_list)
+        self.__queue_download_files(imgLinks, titleDir, work_name, task_list, counter)
         
         
         # Link type
@@ -536,7 +536,7 @@ class KMP:
                             fd.write("\n" + hr)
                 
             # Image Section
-            task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list)
+            task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
 
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
@@ -565,8 +565,6 @@ class KMP:
                         else:
                             self.__threads.enqueue((self.__download_file, (src, fname)))
         
-        global counter
-        counter = 0
         
 
         # Download post comments ################################################
