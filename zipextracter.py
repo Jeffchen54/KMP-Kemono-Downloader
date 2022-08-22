@@ -63,6 +63,7 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
 
                 for f in os.listdir(dirpath):
                     if os.path.isdir(os.path.abspath(dirpath + f)):
+                        # Duplicate file name handler
                         downloaded = False
                         while not downloaded:
                             try:
@@ -107,9 +108,9 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
                 logging.critical("Unzipping a non zip file has occured, failure is described below:" +
                                 "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
                 logging.critical(e)
-                d = os.listdir(zippath)
+                d = os.listdir(destpath)
                 if len(d) == 0:
-                    os.remove(zippath)
+                    os.rmdir(destpath)
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
                             "File size: " + str(os.stat(zippath).st_size))

@@ -287,4 +287,7 @@ overwritting existing files
 # CONFIRMED COMING SOON!
 - Advanced duplicate file database. All downloaded files src recorded and matched against
 in future downloads
-- 
+- various omittion switches (post content, comments, images, attachments)
+- record extraction error to log
+- logging switch
+- Advanced dupe file check with a database

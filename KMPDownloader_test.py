@@ -589,7 +589,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
 
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "Abbie Gonzalez")), 0)
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "ie")), 1)
-        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 156)
+        self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "みこやん")), 144)
         self.assertEqual(self.getNumFiles(os.path.join(self.tempdir, "めかの工場")), 138)
 
         self.KMP.close()
@@ -729,10 +729,19 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         # Mp4 and images
         self.KMP = KMP(self.tempdir, unzip=False, tcount=3, chunksz=None, download_server_name_type=True)
         self.KMP.routine("https://kemono.party/fanbox/user/49494721/post/4072005", unpacked=None)
-        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "soso\胡桃Live2Dアニメ by soso from Pixiv Fanbox  Kemono\\b7e05408-ffe7-451a-b3bf-850f3511faec.jpg")))
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir, "soso\胡桃Live2Dアニメ by soso from Pixiv Fanbox  Kemono\\d1c15668-08e1-4bea-a1bc-a55d25e59bc3.jpg")))
         self.assertTrue(os.path.exists(os.path.join(self.tempdir, "soso\胡桃Live2Dアニメ by soso from Pixiv Fanbox  Kemono\\胡桃_Live2D.mp4")))
         self.KMP.close()     
     
+    def test_password_zip(self):
+        """
+        Tests download and extraction of a password 
+        protected zip
+        """
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None, download_server_name_type=True)
+        self.KMP.routine("https://kemono.party/fanbox/user/262147/post/4062214", unpacked=2)
+        self.assertFalse(os.path.exists(os.path.abspath("./") + "クレー計20枚パスワード付zip"))
+
     def getDirSz(self, dir: str) -> int:
         """
         Returns directory and its content size
@@ -748,6 +757,7 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
                     size += os.path.getsize(fp)
         return size
 
+    
     def getNumFiles(self, dir:str) -> int:
         """
         Returns the number of files in a directory

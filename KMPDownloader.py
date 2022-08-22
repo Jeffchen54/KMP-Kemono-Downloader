@@ -28,10 +28,8 @@ Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Added experimental download mode
 - Fixed several edge cases in discord attachment downloads and improved error messaging
-- TODO various omittion switches (post content, comments, images, attachments)
-- TODO record extraction error to log
-- TODO logging switch
-- TODO Advanced dupe file check with a database
+- Fixed bug where password protected zips caused program to hang 
+
 
 @author Jeff Chen
 @version 0.5.3
@@ -913,7 +911,7 @@ class KMP:
             logging.critical("Unknown URL -> " + url)
             # WRITETOLOG
             raise UnknownURLTypeException
-        if not task_list:
+        if not task_list and get_list:
             logging.critical("Failed")
             logging.critical(url)
             exit(-1)
