@@ -39,6 +39,9 @@ View changelog for more details on features not included here.
     pip install tqdm
     
     pip install patool
+
+    pip install alive_progress
+
 - Install 7z and add it to your Window's Path. Line should be in the format "C:\Users\chenj\Downloads\7-Zip"
 - Copy and paste the files in patch for patoolib into your patoolib library. You can also grab the patched files from https://github.com/wummel/patool/pull/83/commits/c5282e30e1b3448081d74a0b8a86c7c9ecaaebbf. On my computer, the directory
 is "C:\Users\chenj\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\patoolib\programs".
@@ -145,6 +148,16 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
  ![image](https://user-images.githubusercontent.com/78765964/175039979-1dc7b2b9-ac4b-461e-b0dc-587ada9bb473.png)
     
  Follow instructions in the video here -> https://www.youtube.com/watch?v=bo52rBmTiT8
+ 
+ ### Weird / Corrupted file names
+ Sometimes, Kemono's serverside file names are bugged and may lead to files such as the ones seen below:
+ 
+ <img width="549" alt="image" src="https://user-images.githubusercontent.com/78765964/185965578-8dd96d50-ad84-4159-96f9-82e522076994.png">
+    
+ To solve this, do not use the '-e' switch. Remove it and rerun the program, the program will automatically rename all files and you will get this instead:
+ 
+ <img width="713" alt="image" src="https://user-images.githubusercontent.com/78765964/185966035-672a3da2-27aa-483d-a1ed-6496779a13a4.png">
+
  ### Specific Discord Issues:
 - Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
     
