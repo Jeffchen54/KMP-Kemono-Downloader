@@ -324,7 +324,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, get_list:bool=False) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, task_list:Queue|None) -> Queue:
         """
         Puts all urls in imgLinks into download queue
 
@@ -333,16 +333,13 @@ class KMP:
         dir: where to save the images
         base_name: Prefix to name files, None for just counter
         enqueue: Whether to queue to task or not
+        task_list: list to store tasks into instead of directly processing them, None to directly process them
         
         Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
-        Return Task in the format (self.__download_file, (src, fname)) where download_file is 
-                the function used to download the file, src is the file src, and fname is what to
-                name the downloaded file
+        Return modified tasklist, is None if task_list param is None
         """
-        task_list:Queue = None
-        if get_list:
-            task_list = Queue()
-        elif not self.__threads.get_status():
+
+        if not self.__threads.get_status():
             raise DeadThreadPoolException
         
         if not base_name:
@@ -388,7 +385,7 @@ class KMP:
                 else:   # If not registered, add to register at value 1
                     self.__register.hashtable_add(KVPair[str, int](fname, 1))
                 
-                if not get_list:
+                if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname)))
                 else:
                     task_list.put_nowait((self.__download_file, (src, fname, False)))
@@ -432,7 +429,7 @@ class KMP:
 
             
 
-    def __process_container(self, url: str, root: str, get_list:bool=False) -> Queue:
+    def __process_container(self, url: str, root: str, task_list:Queue|None) -> Queue:
         """
         Processes a container which is the page used to store post content
 
@@ -444,18 +441,14 @@ class KMP:
         Param:
         url: url of the container
         root: directory to store the content
-        get_list: Returns a list of tasks task instead of directly processing the tasks if true. Tasks are downloaded content
+        task_list: List to store tasks in instead of processing them immediately, None to process tasks immediately
         
-        Return: a task instead of directly processing the task if get_list is true
+        Return: task_list after modification
         Raise: DeadThreadPoolException when no download threads are available, ignored if get_list is true
         """
         logging.debug("Processing: " + url + " to be stored in " + root)
-        task_list:Queue = None
         
-        if get_list:
-            task_list = Queue(0)
-        
-        elif not self.__threads.get_status():
+        if not self.__threads.get_status():
             raise DeadThreadPoolException
 
         # Get HTML request and parse the HTML for image links and title ############
@@ -519,11 +512,8 @@ class KMP:
         # Download all 'files' #####################################################
         # Image type
         
-        task = self.__queue_download_files(imgLinks, titleDir, work_name, get_list=get_list)
+        task = self.__queue_download_files(imgLinks, titleDir, work_name, task_list)
         
-        if get_list:
-            while not task.empty():
-                task_list.put_nowait(task.get_nowait())
         
         # Link type
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
@@ -546,10 +536,8 @@ class KMP:
                             fd.write("\n" + hr)
                 
             # Image Section
-            task = self.__queue_download_files(content.find_all('img'), titleDir, work_name, get_list=get_list)
-            if get_list:
-                while not task.empty():
-                    task_list.put_nowait(task.get_nowait())
+            task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list)
+
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
@@ -572,7 +560,7 @@ class KMP:
                             fname = split[0] + "(" + str(value) + ")." + split[2]
                         else:   # If not registered, add to register at value 1
                             self.__register.hashtable_add(KVPair[str, int](fname, 1))
-                        if get_list:
+                        if task_list:
                             task_list.put_nowait((self.__download_file, (src, fname, False)))
                         else:
                             self.__threads.enqueue((self.__download_file, (src, fname)))
@@ -675,12 +663,9 @@ class KMP:
             # Process all links on page
             for link in contLinks:
                 content = link.find("a")
-                q = self.__process_container(
-                    self.__CONTAINER_PREFIX + content.get('href'), titleDir, get_list=get_list)
-                # TODO create dedicated method which automatically adds to a Queue to prevent combining 2 queues
-                if get_list:
-                    while not q.empty():
-                        task_list.put_nowait(q.get_nowait())
+                task_list = self.__process_container(
+                    self.__CONTAINER_PREFIX + content.get('href'), titleDir, task_list)
+
             if continuous:
                 # Move to next window
                 counter += 25
@@ -896,7 +881,7 @@ class KMP:
                 os.makedirs(titleDir)
             reqs.close()
             # Process container
-            task_list = self.__process_container(url, titleDir, get_list=get_list)
+            task_list = self.__process_container(url, titleDir, task_list)
 
         # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
@@ -989,6 +974,7 @@ class KMP:
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
 
+        # Keeps a list of download tasks Queues, each entry is a Queue!
         queue_list:list = []
         
         # Get url to download ######################
