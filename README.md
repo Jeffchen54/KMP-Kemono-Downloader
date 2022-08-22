@@ -86,6 +86,8 @@ TROUBLESHOOTING - Solutions to possible issues
 
 -h : Help
 
+-EXPERIMENTAL : Enable experimental mode
+
  Default file organization is packed, all works will have their own folder within an artist folder.
     
 ## Bulk file
@@ -154,6 +156,10 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
 These bugs were accounted for but not enough testing has been conducted
   
 None
+## Changelog 0.5.4:
+- Added experimental download mode
+- Fixed several edge cases in discord attachment downloads and improved error messaging
+- Fixed bug where password protected zips caused program to hang 
 
 ## Changelog 0.5.3:
 - Pre existing download folder check
@@ -282,3 +288,11 @@ overwritting existing files
 - GUI
 - Command line argument support for more settings
 - Automatic Gdrive and Mega download from links (Unlikely)
+
+## CONFIRMED COMING SOON!
+- Advanced duplicate file database. All downloaded files src recorded and matched against
+in future downloads
+- various omittion switches (post content, comments, images, attachments)
+- record extraction error to log
+- logging switch
+- Advanced dupe file check with a database
