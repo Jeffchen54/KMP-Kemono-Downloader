@@ -741,6 +741,26 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None, download_server_name_type=True)
         self.KMP.routine("https://kemono.party/fanbox/user/262147/post/4062214", unpacked=2)
         self.assertFalse(os.path.exists(os.path.abspath("./") + "クレー計20枚パスワード付zip"))
+        self.KMP.close()
+    def test_alt_routine(self):
+        """
+        Tests alternate download for all download types
+        """
+        self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None)
+        # All Artist Page
+        self.KMP.alt_routine("https://kemono.party/fanbox/user/836862", unpacked=2)
+        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "tsumikisata"), 544))        
+        # Single Artist Page
+        self.KMP.alt_routine("https://kemono.party/patreon/user/19467060?o=25", unpacked=2)
+        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "katecavanaugh"), 86))        
+       
+        # Single Artist Work
+        self.KMP.alt_routine("https://kemono.party/patreon/user/169359/post/27626311", unpacked=2)
+        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "seductionrl"), 86))        
+        
+        # Discord Channel
+        
+        # Text file
 
     def getDirSz(self, dir: str) -> int:
         """

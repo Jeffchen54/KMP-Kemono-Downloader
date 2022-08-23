@@ -879,7 +879,10 @@ class KMP:
         Raise:
             UnknownURLTypeException when url type cannot be determined
         """
-        task_list = None
+        if get_list:
+            task_list = Queue(0)
+        else:
+            task_list = None
         scrape_pool = ThreadPool(self.__qcount)
         scrape_pool.start_threads()
         # For single window page, we can process it directly since we don't have to flip to next pages
@@ -904,7 +907,7 @@ class KMP:
                 os.makedirs(titleDir)
             reqs.close()
             # Process container
-            scrape_pool.enqueue((self.__process_container, (url, titleDir, task_list,)))
+            self.__process_container(url, titleDir, task_list)
 
         # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
@@ -919,6 +922,7 @@ class KMP:
             logging.critical("Unknown URL -> " + url)
             # WRITETOLOG
             raise UnknownURLTypeException
+        
         if not task_list and get_list:
             logging.critical("Failed")
             logging.critical(url)
