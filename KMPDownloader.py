@@ -27,13 +27,14 @@ from PersistentCounter import PersistentCounter
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Added experimental download mode
-- Fixed several edge cases in discord attachment downloads and improved error messaging
-- Fixed bug where password protected zips caused program to hang 
-
+- URL scraping for non discord services is now multithreaded, explosively decreases web scraping time
+- Slightly improved url web scraping efficiency
+- Fixed Experimental mode bug where download count started at 1 instead of zero, main thread will exit early and
+if there is any download thread that was still active, program will hang up.
+- Fixed bug where Pixiv and other non kemono links would lead to infinite retries due to program thinking kemono is trying to rate limit
 
 @author Jeff Chen
-@version 0.5.4
+@version 0.5.5
 @last modified 8/22/2022
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'}
@@ -78,6 +79,7 @@ class KMP:
 
     __CONTAINER_PREFIX = "https://kemono.party"
     __register:HashTable   # Registers a directory, combats multiple posts using the same name
+    __register_mutex:Lock  # Lock for the reguster
     __fcount:int  # Number of downloaded files
     __fcount_mutex:Lock   # Mutex for fcount 
     __failed:int  # Number of downloaded files
@@ -89,9 +91,11 @@ class KMP:
     __post_process:list
     __download_server_name_type:bool
     __progress:Semaphore
+    __progress_mutex:Lock
+    __qcount:int # Number of threads for scraping URLs
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = []) -> None:
+        link_name_exclusion:list[str] = [], qcount:int|None=None) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -106,12 +110,14 @@ class KMP:
             post_name_exclusion: keywords in excluded posts, must be all lowercase to be case insensitive
             download_server_name_type: True to download server file name, false to use a program defined naming scheme instead
             link_name_exclusion: keyword in excluded link. The link is the plaintext, not the link pointer, must be all lowercase to be case insensitive.
+            qcount: Number of threads to be used while scraper urls
         """
         if folder:
             self.__folder = folder
         else:
             raise UnspecifiedDownloadPathException
-        self.__progress = Semaphore()
+        self.__progress_mutex = Lock()
+        self.__progress = Semaphore(value=0)
         self.__register = HashTable(1000)
         self.__fcount = 0
         self.__unzip = unzip
@@ -123,6 +129,11 @@ class KMP:
         self.__post_name_exclusion = post_name_exclusion
         self.__download_server_name_type = download_server_name_type
         self.__link_name_exclusion = link_name_exclusion
+        self.__register_mutex = Lock()
+        if not qcount or qcount <= 0:
+            self.__qcount = 6
+        else:
+            self.__qcount = qcount
         
         if not http_codes or len(http_codes) == 0:
             self.__http_codes = [429, 403]
@@ -185,14 +196,16 @@ class KMP:
                 r = self.__session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
-                    if r.status_code in self.__http_codes:
+                    if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
                             logging.critical("Reached maximum timeout, writing error to log")
                             jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
                             self.__failed_mutex.acquire()
                             self.__failed += 1
                             self.__failed_mutex.release()
+                            self.__progress_mutex.acquire()
                             self.__progress.release()
+                            self.__progress_mutex.release()
                             return
                         else:
                             timeout += 1
@@ -202,7 +215,9 @@ class KMP:
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
                         jutils.write_to_file(LOG_NAME, "{code} TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+                        self.__progress_mutex.acquire()
                         self.__progress.release()
+                        self.__progress_mutex.release()
                         return
 
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
@@ -279,7 +294,9 @@ class KMP:
                 if not os.path.exists(p):
                     os.mkdir(p)
                 zipextracter.extract_zip(fname, p, temp=True)
+        self.__progress_mutex.acquire()
         self.__progress.release()
+        self.__progress_mutex.release()
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -377,6 +394,7 @@ class KMP:
 
                 # Check if the post attachment shares the same name as another post attachemnt
                 # Adjust filename if found
+                self.__register_mutex.acquire()
                 value = self.__register.hashtable_lookup_value(fname)
                 if value != None:  # If register, update titleDir and increment value
                     self.__register.hashtable_edit_value(fname, value + 1)
@@ -384,11 +402,12 @@ class KMP:
                     fname = split[0] + "(" + str(value) + ")." + split[2]
                 else:   # If not registered, add to register at value 1
                     self.__register.hashtable_add(KVPair[str, int](fname, 1))
-                
+                self.__register_mutex.release()
+                    
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname)))
                 else:
-                    task_list.put_nowait((self.__download_file, (src, fname, False)))
+                    task_list.put((self.__download_file, (src, fname, False)))
                 counter.toggle()
         return task_list
 
@@ -491,13 +510,14 @@ class KMP:
             work_name = ""
             
             # Check if directory has been registered ###################################
+            self.__register_mutex.acquire()
             value = self.__register.hashtable_lookup_value(titleDir)
             if value != None:  # If register, update titleDir and increment value
                 self.__register.hashtable_edit_value(titleDir, value + 1)
                 titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
                 self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
-
+            self.__register_mutex.release()
         # For unpacked, all files will be placed in the artist directory
         else:
             titleDir = root
@@ -553,6 +573,7 @@ class KMP:
                         
                         # Check if the post attachment shares the same name as another post attachemnt
                         # Adjust filename if found
+                        self.__register_mutex.acquire()
                         value = self.__register.hashtable_lookup_value(fname)
                         if value != None:  # If register, update titleDir and increment value
                             self.__register.hashtable_edit_value(fname, value + 1)
@@ -560,8 +581,10 @@ class KMP:
                             fname = split[0] + "(" + str(value) + ")." + split[2]
                         else:   # If not registered, add to register at value 1
                             self.__register.hashtable_add(KVPair[str, int](fname, 1))
+                        self.__register_mutex.release()
+                        
                         if task_list:
-                            task_list.put_nowait((self.__download_file, (src, fname, False)))
+                            task_list.put((self.__download_file, (src, fname, False)))
                         else:
                             self.__threads.enqueue((self.__download_file, (src, fname)))
         
@@ -621,7 +644,7 @@ class KMP:
         shutil.rmtree(src)    
         return
 
-    def __process_window(self, url: str, continuous: bool, get_list:bool=False) -> Queue:
+    def __process_window(self, url: str, continuous: bool, get_list:bool=False, pool:ThreadPool|None=None) -> Queue:
         """
         Processes a single main artist window, a window is a page where multiple artist works can be seen
 
@@ -629,7 +652,9 @@ class KMP:
             url: url of the main artist window
             continuous: True to attempt to visit next pages of content, False to not
             get_list: Return a list of tasks instead of processing the data immediately
-        Return: If get_list is true, a list of tasks needed to process the data is returned. 
+            pool: None for single thread or an initialized pool for multithreading
+        Return: If get_list is true, a list of tasks needed to process the data is returned.
+        Post: pool may not have completed all of its tasks 
         """
         
         reqs = None
@@ -661,9 +686,7 @@ class KMP:
             # Process all links on page
             for link in contLinks:
                 content = link.find("a")
-                task_list = self.__process_container(
-                    self.__CONTAINER_PREFIX + content.get('href'), titleDir, task_list)
-
+                pool.enqueue((self.__process_container, (self.__CONTAINER_PREFIX + content.get('href'), titleDir, task_list,)))
             if continuous:
                 # Move to next window
                 counter += 25
@@ -834,11 +857,11 @@ class KMP:
             task_list = self.__process_discord_server(s, dir, get_list=get_list)
             if get_list:
                 for task in task_list:
-                    task_queue.put_nowait(task)
+                    task_queue.put(task)
         
         return task_queue
                 
-
+    # TODO custom threadpool instead of automatically created one
     def __call_and_interpret_url(self, url: str, get_list:bool=False) -> Queue|None:
         """
         Calls a function based on url type
@@ -857,9 +880,11 @@ class KMP:
             UnknownURLTypeException when url type cannot be determined
         """
         task_list = None
+        scrape_pool = ThreadPool(self.__qcount)
+        scrape_pool.start_threads()
         # For single window page, we can process it directly since we don't have to flip to next pages
         if '?' in url:
-            self.__process_window(url, False)
+            task_list = self.__process_window(url, False, get_list=get_list, pool=scrape_pool)
         # Single artist work requires a directory similar to one if it were a window to be created, once done, it can be processed
         elif "post" in url:
             # Build directory
@@ -879,7 +904,7 @@ class KMP:
                 os.makedirs(titleDir)
             reqs.close()
             # Process container
-            task_list = self.__process_container(url, titleDir, task_list)
+            scrape_pool.enqueue((self.__process_container, (url, titleDir, task_list,)))
 
         # Discord requires a totally different method compared to other services as we are making API calls instead of scraping HTML
         elif 'discord' in url:
@@ -888,7 +913,7 @@ class KMP:
 
         # For multiple window pages
         elif 'user' in url:
-            task_list = self.__process_window(url, True, get_list=get_list)
+            task_list = self.__process_window(url, True, get_list=get_list, pool=scrape_pool)
         # Not found, we complain
         else:
             logging.critical("Unknown URL -> " + url)
@@ -898,6 +923,9 @@ class KMP:
             logging.critical("Failed")
             logging.critical(url)
             exit(-1)
+        
+        scrape_pool.join_queue()
+        scrape_pool.kill_threads()
         return task_list
 
     def __create_threads(self, count: int) -> ThreadPool:
@@ -1002,7 +1030,6 @@ class KMP:
             sz += task_list.qsize()
         logging.info("Number of files to be downloaded -> {fnum}".format(fnum=str(sz)))
         
-        # TODO Enqueue into threadpool
         # Create a threadpool to keep track of which artist works are completed.
         task_threads = ThreadPool(6)
         task_threads.start_threads()
@@ -1097,7 +1124,9 @@ def help() -> None:
         -f <textfile.txt> : Bulk download from text file containing links\n\
         -d <path> : REQUIRED - Set download path for single instance, must use '\\'\n\
         -c <#> : Adjust download chunk size in bytes (Default is 64M)\n\
-        -t <#> : Change download thread count (default is 6)\n")
+        -t <#> : Change download thread count (default is 6)\n\
+        -q <#> : Change url scraping thread counter (default is 6)\n")
+        
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
         -x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
@@ -1129,6 +1158,7 @@ def main() -> None:
     urls = False
     unzip = False
     tcount = -1
+    qcount = -1
     chunksz = -1
     unpacked = False
     excluded:list = []
@@ -1179,7 +1209,11 @@ def main() -> None:
             elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
-                logging.info("THREAD_COUNT -> " + str(tcount))
+                logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
+            elif sys.argv[pointer] == '-q' and len(sys.argv) >= pointer:
+                qcount = int(sys.argv[pointer + 1])
+                pointer += 2
+                logging.info("SCRAPER_THREAD_COUNT -> " + str(qcount))
             elif sys.argv[pointer] == '-c' and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
@@ -1227,7 +1261,7 @@ def main() -> None:
 
     # Run the downloader
     if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded, qcount=qcount)
         
         if experimental:
             if unpacked:
