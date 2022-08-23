@@ -730,54 +730,55 @@ class KMP:
         stringBuilder = []
         global counter
         # Process each json individually
-        for js in reversed(jsList):
-            # Add buffer
-            stringBuilder.append('_____________________________________________________\n')
+        for jsCluster in reversed(jsList):
+            for js in reversed(jsCluster):
+                # Add buffer
+                stringBuilder.append('_____________________________________________________\n')
 
-            # Process name 
-            stringBuilder.append(js.get('author').get('username'))
-            stringBuilder.append('\t')
+                # Process name 
+                stringBuilder.append(js.get('author').get('username'))
+                stringBuilder.append('\t')
 
-            # Process date
-            stringBuilder.append(js.get('published'))
-            stringBuilder.append('\n')
+                # Process date
+                stringBuilder.append(js.get('published'))
+                stringBuilder.append('\n')
 
-            # Process content
-            stringBuilder.append(js.get('content'))
-            stringBuilder.append('\n')
+                # Process content
+                stringBuilder.append(js.get('content'))
+                stringBuilder.append('\n')
 
-            # Process embeds
-            for e in js.get('embeds'):
+                # Process embeds
+                for e in js.get('embeds'):
 
-                if e.get('type') == "link":
-                    try:
-                        if e.get('title'):
-                            stringBuilder.append(e.get('title') + " -> " + e.get('url') + '\n')
-                        elif e.get('description'):
-                            stringBuilder.append(e.get('description') + " -> " + e.get('url') + '\n')
+                    if e.get('type') == "link":
+                        try:
+                            if e.get('title'):
+                                stringBuilder.append(e.get('title') + " -> " + e.get('url') + '\n')
+                            elif e.get('description'):
+                                stringBuilder.append(e.get('description') + " -> " + e.get('url') + '\n')
+                            else:
+                                stringBuilder.append(e.get('url') + '\n')
+                        except TypeError:
+                            logging.critical("Unidentified edge case in Discord JS scraping process has occured, details:\
+                                {info}".format(info=e))
+
+                # Add attachments
+                for i in js.get('attachments'):
+                    url = self.__CONTAINER_PREFIX + i.get('path')
+                    stringBuilder.append(url + '\n\n')
+                    
+                    # Check if the attachment is dupe
+                    value = self.__register.hashtable_lookup_value(url)
+                    if value == None:   # If not registered, add to register at value 1
+                        self.__register.hashtable_add(KVPair[str, int](url, 1))
+                    
+                        # Download the attachment
+                        if get_list:
+                            task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], False)))
                         else:
-                            stringBuilder.append(e.get('url') + '\n')
-                    except TypeError:
-                        logging.critical("Unidentified edge case in Discord JS scraping process has occured, details:\
-                            {info}".format(info=e))
-
-            # Add attachments
-            for i in js.get('attachments'):
-                url = self.__CONTAINER_PREFIX + i.get('path')
-                stringBuilder.append(url + '\n\n')
-                
-                # Check if the attachment is dupe
-                value = self.__register.hashtable_lookup_value(url)
-                if value == None:   # If not registered, add to register at value 1
-                    self.__register.hashtable_add(KVPair[str, int](url, 1))
-                
-                    # Download the attachment
-                    if get_list:
-                        task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], False)))
-                    else:
-                        self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
-                    counter += 1
-                # If is on the register, do not download the attachment
+                            self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
+                        counter += 1
+                    # If is on the register, do not download the attachment
 
         # Write to file
         return stringBuilder if(not get_list) else (stringBuilder, task_list,)
