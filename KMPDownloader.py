@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 
 import jutils
+from Threadpool import tname
 from DiscordtoJson import DiscordToJson
 from HashTable import HashTable
 from HashTable import KVPair
@@ -76,7 +77,8 @@ class KMP:
     __tcount: int               # Thread count
     __chunksz: int              # Size of chunks to download in
     __threads:ThreadPool        # Threadpool with tcount threads
-    __session:requests.Session  # requests session downloader
+    __sessions:list             # requests sessions for threads
+    __session:requests.Session  # request session for main thread
     __unpacked:bool             # Unpacked download type flag
     __http_codes:list[int]      # HTTP codes to retry on
 
@@ -164,10 +166,15 @@ class KMP:
         else:
             self.__ext_blacklist = None
         # Create session ###########################
+        self.__sessions = []
+        for i in range(0, max(self.__tcount, self.__qcount)):
+            session = cfscrape.create_scraper(requests.Session())
+            adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
+            session.mount('http://', adapter)
+            self.__sessions.append(session)
         self.__session = cfscrape.create_scraper(requests.Session())
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
-
     def reset(self):
         """
         Resets register and download count, should be called if the KMP
@@ -182,17 +189,35 @@ class KMP:
         Closes KMP download session, cannot be reopened, must be called to prevent
         unclosed socket warnings
         """
+        for session in self.__sessions:
+            session.close()
         self.__session.close()
 
-    def __download_file(self, src: str, fname: str, display_bar:bool = True, session:CloudflareScraper = None) -> None:
+    def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
         """
         Downloads file at src. Skips if a file already exists sharing the same fname and size 
         Param:
             src: src of image to download
             fname: what to name the file to download, with extensions. absolute path including 
                     file names
-            session: scraper to use, if none are chosen, a scrapper will be created which will be closed after use
+        Pre: If program is called with a thread, it will use a unique session, if called by main, it will use a newly
+            generated session that is closed before function terminates
         """
+        # Configure tname
+        if not tname.name:
+            tname.name = "default thread name" 
+        
+        
+        close = False
+        # Configure session
+        if not tname.id:
+            session = cfscrape.create_scraper(requests.Session())
+            adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
+            session.mount('http://', adapter)
+            close = True 
+        else:
+            session = self.__sessions[tname.id]   
+        
         close = False
         if not session:
             session = cfscrape.create_scraper(requests.Session())
@@ -264,7 +289,7 @@ class KMP:
                                 unit='iB',
                                 unit_scale=True,
                                 leave=False,
-                                bar_format= "(" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
+                                bar_format= tname.name + ": (" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
                                 unit_divisor=int(1024)) as bar:
                             for chunk in data.iter_content(chunk_size=self.__chunksz):
                                 sz = fd.write(chunk)
@@ -479,14 +504,29 @@ class KMP:
         root: directory to store the content
         task_list: List to store tasks in instead of processing them immediately, None to process tasks immediately
         
+        Pre: If program is called with a thread, it will use a unique session, if called by main, it will use a newly
+                generated session that is closed before function terminates
+        
         Return: task_list after modification
         Raise: DeadThreadPoolException when no download threads are available, ignored if get_list is true
         """
+        
         logging.debug("Processing: " + url + " to be stored in " + root)
         counter = PersistentCounter()     # Counter to name the images as 
         if not self.__threads.get_status():
             raise DeadThreadPoolException
-
+        
+        close = False
+        # Determine which session to use
+        if not tname.id:
+            close = True
+            session = cfscrape.create_scraper(requests.Session())
+            adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
+            session.mount('http://', adapter)
+            close = True
+        else:
+            session = self.__sessions[tname.id]    
+        
         # Get HTML request and parse the HTML for image links and title ############
         reqs = None
         while not reqs:
@@ -518,6 +558,10 @@ class KMP:
         for keyword in self.__post_name_exclusion:
             if keyword in work_name.lower():
                 logging.debug("Excluding {post}, kword: {kword}".format(post=work_name, kword=keyword) )
+                
+                # Close session if applicable
+                if close:
+                    session.close()
                 return
         
         # If not unpacked, need to consider if an existing dir exists
@@ -623,6 +667,10 @@ class KMP:
         # Add to post process queue if partial unpack is on
         if self.__unpacked == 1:
             self.__post_process.append((self.__partial_unpack_post_process, (titleDir, root + backup)))
+        
+        # Close session if applicable
+        if close:
+            session.close()
         
         return task_list
     
