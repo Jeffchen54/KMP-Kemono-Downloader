@@ -10,6 +10,7 @@ import requests.adapters
 from Threadpool import ThreadPool
 from threading import Semaphore, Thread
 from threading import Lock
+import cfscrape
 
 
 
@@ -50,7 +51,7 @@ class DiscordToJson():
         # Return json
         return js
 
-    def discord_lookup_all(self, channelID:str|None, scraper:CloudflareScraper, threads:int=6)->dict|list:
+    def discord_lookup_all(self, channelID:str|None, threads:int=6)->dict|list:
         """
         Similar to discord_channel_lookup() but processes everything, not just in segments
         
@@ -58,7 +59,7 @@ class DiscordToJson():
             threads: Number of threads to use while looking up js
         """
         # Grab data
-        js_buff = [1]
+        js_buff = []
 
         # Generate threads and threading vars
         pool = ThreadPool(threads)
@@ -66,10 +67,18 @@ class DiscordToJson():
         js_buff_lock = Lock()
         main_sem = Semaphore(0)
         
+        # Generate sessions for each thread
+        sessions = []
+        for i in range(0, threads):
+            session = cfscrape.create_scraper(requests.Session())
+            adapter = requests.adapters.HTTPAdapter(pool_connections=threads, pool_maxsize=threads, max_retries=0, pool_block=True)
+            session.mount('http://', adapter)
+            sessions.append(session)
+        
         
         # Loop until no more data left
         for i in range(0, threads):
-            pool.enqueue((self.discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, scraper, main_sem, js_buff, js_buff_lock, pool)))
+            pool.enqueue((self.discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, sessions[i], main_sem, js_buff, js_buff_lock, pool)))
 
         # Sleep until done
         main_sem.acquire()
@@ -77,6 +86,10 @@ class DiscordToJson():
         # Kill threads
         pool.join_queue()
         pool.kill_threads()
+        
+        # Kill all adapters
+        for session in sessions:
+            session.close()
         
         # Return json
         return js_buff
@@ -108,10 +121,15 @@ class DiscordToJson():
             try:
                 data = scraper.get(url, timeout=5, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                logging.debug("Connection error, retrying")
+                logging.info("Connection error, retrying -> url: {s}".format(s=url))
                 
+        if not data:
+            logging.critical("Invalid data scraped -> url: {S}".format(s=url))
+        
         # Convert data
-            js = data.json()    
+        js = data.json()    
+            
+        
         # Add data to js_buff
         if len(js) > 0:
             js_buff_lock.acquire()
@@ -120,9 +138,9 @@ class DiscordToJson():
             space_diff = self.__calculate_additional_list_slots(js_buff, insert_pos)
             
             if(space_diff > 0): 
-                addon = list[space_diff]
-                js_buff = js_buff + addon
-                
+                addon = [None] * int(space_diff)
+                js_buff += addon
+
             # Add into js buff
             js_buff[int(insert_pos)] = js
             logging.debug("Received " + str(js) + " from " + url)

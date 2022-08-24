@@ -103,6 +103,13 @@ class Kill_Queue():
 
 
 class ThreadPool():
+    """
+    Very basic task sharing threadpool, does not support futures.
+    Thread local variables:
+        tname.name: Thread name
+        tname.id: thread id
+
+    """
     # Download task queue, Contains tuples in the structure: (func(),(args1,args2,...))
     __task_queue:Kill_Queue
     __threads:list  # List of threads in the threadpool
@@ -224,6 +231,7 @@ class ThreadPool():
             and retreives the task from download_queue
             """
             tname.name = "Thread #" + str(self.__id)
+            tname.id = self.__id
             while True:
                 # Wait until download is available
                 self.__task_queue.acquire_resource()

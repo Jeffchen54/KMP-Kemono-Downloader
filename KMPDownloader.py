@@ -23,6 +23,8 @@ from Threadpool import ThreadPool
 import zipextracter
 import alive_progress
 from PersistentCounter import PersistentCounter
+from cfscrape import CloudflareScraper
+
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
@@ -32,7 +34,8 @@ Using multithreading
 - Fixed Experimental mode bug where download count started at 1 instead of zero, main thread will exit early and
 if there is any download thread that was still active, program will hang up.
 - Fixed bug where Pixiv and other non kemono links would lead to infinite retries due to program thinking kemono is trying to rate limit
-
+- Fixed rare data race bug where 2 threads attempt to create a directory with the same name at the same time
+- Each thread will now have their own session due to sessions not being thread safe
 @author Jeff Chen
 @version 0.5.5
 @last modified 8/22/2022
@@ -93,6 +96,7 @@ class KMP:
     __progress:Semaphore
     __progress_mutex:Lock
     __qcount:int # Number of threads for scraping URLs
+    __dir_lock:Lock
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], qcount:int|None=None) -> None:
@@ -116,6 +120,7 @@ class KMP:
             self.__folder = folder
         else:
             raise UnspecifiedDownloadPathException
+        self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
         self.__progress = Semaphore(value=0)
         self.__register = HashTable(1000)
@@ -179,21 +184,28 @@ class KMP:
         """
         self.__session.close()
 
-    def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
+    def __download_file(self, src: str, fname: str, display_bar:bool = True, session:CloudflareScraper = None) -> None:
         """
         Downloads file at src. Skips if a file already exists sharing the same fname and size 
         Param:
             src: src of image to download
             fname: what to name the file to download, with extensions. absolute path including 
                     file names
+            session: scraper to use, if none are chosen, a scrapper will be created which will be closed after use
         """
+        close = False
+        if not session:
+            session = cfscrape.create_scraper(requests.Session())
+            adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
+            session.mount('http://', adapter)
+            close = True
         logging.debug("Downloading " + fname + " from " + src)
         r = None
         timeout = 0
         # Grabbing content length 
         while not r:
             try:
-                r = self.__session.request('HEAD', src, timeout=5)
+                r = session.request('HEAD', src, timeout=5)
 
                 if r.status_code >= 400:
                     if r.status_code in self.__http_codes and 'kemono' in src:
@@ -240,7 +252,7 @@ class KMP:
                     data = None
                     while not data:
                         try:
-                            data = self.__session.get(src, stream=True, timeout=5, headers=HEADERS, verify=CA_FILE)
+                            data = session.get(src, stream=True, timeout=5, headers=HEADERS, verify=CA_FILE)
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                              logging.debug("Connection timeout")
                             
@@ -291,12 +303,17 @@ class KMP:
             if self.__unzip and zipextracter.supported_zip_type(fname):
                 p = fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
+                self.__dir_lock.acquire()
                 if not os.path.exists(p):
                     os.mkdir(p)
+                self.__dir_lock.release()
                 zipextracter.extract_zip(fname, p, temp=True)
         self.__progress_mutex.acquire()
         self.__progress.release()
         self.__progress_mutex.release()
+        
+        if close:
+            session.close()
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -553,7 +570,10 @@ class KMP:
                         links = content.find_all("a")
                         for link in links:
                             hr = link.get('href')
-                            fd.write("\n" + hr)
+                            if not hr:
+                                logging.info("Href returns None at url: {u}".format(u=url))
+                            else:
+                                fd.write("\n" + hr)
                 
             # Image Section
             task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
@@ -724,14 +744,15 @@ class KMP:
         if get_list:
             task_list = []
         # make dir
+        self.__dir_lock.acquire()
         if not os.path.isdir(imageDir):
             os.mkdir(imageDir)
-        
+        self.__dir_lock.release()
         stringBuilder = []
         global counter
         # Process each json individually
         for jsCluster in reversed(jsList):
-            for js in reversed(jsCluster):
+            for js in reversed(jsCluster): # Results became a list within a list due to multiprocessing update
                 # Add buffer
                 stringBuilder.append('_____________________________________________________\n')
 
@@ -802,16 +823,16 @@ class KMP:
 
         text_file = "discord__content.txt"
         # makedir
+        self.__dir_lock.acquire()
         if not os.path.isdir(dir):
             os.mkdir(dir)
-
-        # clear data
+        # clear data   
         elif os.path.exists(dir + text_file):
             os.remove(dir + text_file)
-        
+        self.__dir_lock.release()
         # Read every json on the server and put it in queue
         discordScraper = DiscordToJson()
-        js = discordScraper.discord_lookup_all(serverJs.get("id"), self.__session)
+        js = discordScraper.discord_lookup_all(serverJs.get("id"), threads=self.__qcount)
         
         data = self.__download_discord_js(js, dir, get_list=get_list)
         toReturn = None
@@ -983,7 +1004,7 @@ class KMP:
                 counter += 1
                 bar()
     
-    def alt_routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
+    def alt_routine(self, url: str | list[str] | None, unpacked:int | None, benchmark:bool = False) -> None:
         """
         Basically the same as routine but uses an experimental routine to be used in a future development
         
@@ -995,6 +1016,7 @@ class KMP:
             urls. If None, ask user for a url
         unpacked: Whether or not to pack contents tightly or loosely, default is tightly packed.
             Levels 0 -> no unpacking, 1 -> partial unpacking, 2 -> unpack all
+        benchmark: True to download content, false to stop after scraping content
         """
         if unpacked is None:
             self.__unpacked = 0
@@ -1034,6 +1056,11 @@ class KMP:
         for task_list in queue_list:
             sz += task_list.qsize()
         logging.info("Number of files to be downloaded -> {fnum}".format(fnum=str(sz)))
+        
+        # If benchmarking is selecting, test ends here
+        if benchmark:
+            logging.info("Benchmark has been completed!")
+            return
         
         # Create a threadpool to keep track of which artist works are completed.
         task_threads = ThreadPool(6)
@@ -1148,7 +1175,8 @@ def help() -> None:
         -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
         -r <#> : Maximum number of HTTP code retries, default is infinite\n\
         -h : Help\n\
-        -EXPERIMENTAL : Enable experimental mode\n")
+        -EXPERIMENTAL : Enable experimental mode\n\
+        -BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything")
 
 def main() -> None:
     """
@@ -1174,6 +1202,7 @@ def main() -> None:
     server_name = False
     link_excluded = []
     experimental = False
+    benchmark = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -1198,6 +1227,10 @@ def main() -> None:
                 partial_unpack = False
                 pointer += 1
                 logging.info("UNPACKED -> TRUE")
+            elif sys.argv[pointer] == '-BENCHMARK':
+                benchmark = True
+                pointer += 1
+                logging.info("BENCHMARK -> TRUE")
             elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
                 folder = os.path.abspath(sys.argv[pointer + 1])
 
@@ -1268,13 +1301,13 @@ def main() -> None:
     if folder:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded, qcount=qcount)
         
-        if experimental:
+        if experimental or benchmark:
             if unpacked:
-                downloader.alt_routine(urls, 2)
+                downloader.alt_routine(urls, 2, benchmark)
             elif partial_unpack:
-                downloader.alt_routine(urls, 1)
+                downloader.alt_routine(urls, 1, benchmark)
             else:
-                downloader.alt_routine(urls, 0)
+                downloader.alt_routine(urls, 0, benchmark)
         else:
             if unpacked:
                 downloader.routine(urls, 2)
