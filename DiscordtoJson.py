@@ -4,11 +4,12 @@ Simple JSON scraper for Kemono.party discord content.
 @author: Jeff Chen
 @last modified: 6/12/2022
 """
+import time
 from cfscrape import CloudflareScraper
 import logging
 import requests.adapters
 from Threadpool import ThreadPool
-from threading import Semaphore, Thread
+from threading import Semaphore
 from threading import Lock
 import cfscrape
 
@@ -43,6 +44,7 @@ class DiscordToJson():
                 data = scraper.get(url, timeout=5, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 logging.debug("Connection error, retrying")
+                time.sleep(1)
 
         # Convert data
         js = data.json()
@@ -69,7 +71,7 @@ class DiscordToJson():
         
         # Generate sessions for each thread
         sessions = []
-        for i in range(0, threads):
+        for _ in range(0, threads):
             session = cfscrape.create_scraper(requests.Session())
             adapter = requests.adapters.HTTPAdapter(pool_connections=threads, pool_maxsize=threads, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
@@ -77,8 +79,9 @@ class DiscordToJson():
         
         
         # Loop until no more data left
-        for i in range(0, threads):
-            pool.enqueue((self.discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, sessions[i], main_sem, js_buff, js_buff_lock, pool)))
+        [pool.enqueue((self.discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, sessions[i], main_sem, js_buff, js_buff_lock, pool)))\
+            for i in range(0, threads)]
+            
 
         # Sleep until done
         main_sem.acquire()
@@ -88,8 +91,8 @@ class DiscordToJson():
         pool.kill_threads()
         
         # Kill all adapters
-        for session in sessions:
-            session.close()
+        [session.close() for session in sessions]
+        
         
         # Return json
         return js_buff
