@@ -108,9 +108,10 @@ https://kemono.party/service/user/xxxxxx?o=25: Downloads all artist works on tha
   
 https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist work
 
-## Download information:
-- There is currently no way to change download options without changing the code directly
-- All files will be downloaded in dynamically generated paths from a given download path
+## Important Download information:
+- There are discord servers with up to 1 million posts, this will usually take overnight to a day to complete as
+well as needing a significant amount of memory. If you are downloading from other services, it will be much quicker
+than from discord due to the extra processing that is needed for discord content. 
 
 ### Example
 1) User wants to download https://kemono.party/service/user/xxxxxx/post/xxx in path C:/user/contents/
