@@ -53,13 +53,15 @@ class DiscordToJson():
         # Return json
         return js
 
-    def discord_lookup_all(self, channelID:str|None, threads:int=6)->dict|list:
+    def discord_lookup_all(self, channelID:str|None, threads:int=6, sessions:list=None)->dict|list:
         """
         Similar to discord_channel_lookup() but processes everything, not just in segments
         
         Param:
             threads: Number of threads to use while looking up js
+            sessions: list of sessions used when scraping, size must be >= threads
         """
+        
         # Grab data
         js_buff = []
 
@@ -70,19 +72,18 @@ class DiscordToJson():
         main_sem = Semaphore(0)
         
         # Generate sessions for each thread
-        sessions = []
-        for _ in range(0, threads):
-            session = cfscrape.create_scraper(requests.Session())
-            adapter = requests.adapters.HTTPAdapter(pool_connections=threads, pool_maxsize=threads, max_retries=0, pool_block=True)
-            session.mount('http://', adapter)
-            sessions.append(session)
-        
+        if sessions:
+            assert(len(sessions) >= threads)
+        else:
+            sessions = [cfscrape.create_scraper(requests.Session())] * threads
+            adapters = [requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0, pool_block=True)] * threads
+            [session.mount('http://', adapter) for session,adapter in zip(sessions,adapters)]
         
         # Loop until no more data left
         [pool.enqueue((self.discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, sessions[i], main_sem, js_buff, js_buff_lock, pool)))\
             for i in range(0, threads)]
-            
 
+        
         # Sleep until done
         main_sem.acquire()
         
@@ -92,7 +93,6 @@ class DiscordToJson():
         
         # Kill all adapters
         [session.close() for session in sessions]
-        
         
         # Return json
         return js_buff

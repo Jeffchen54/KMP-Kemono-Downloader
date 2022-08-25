@@ -882,7 +882,7 @@ class KMP:
         self.__dir_lock.release()
         # Read every json on the server and put it in queue
         discordScraper = DiscordToJson()
-        js = discordScraper.discord_lookup_all(serverJs.get("id"), threads=self.__qcount)
+        js = discordScraper.discord_lookup_all(serverJs.get("id"), threads=self.__qcount, sessions=self.__sessions)
         
         data = self.__download_discord_js(js, dir, get_list=get_list)
         toReturn = None
