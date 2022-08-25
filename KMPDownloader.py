@@ -116,7 +116,9 @@ class KMP:
             post_name_exclusion: keywords in excluded posts, must be all lowercase to be case insensitive
             download_server_name_type: True to download server file name, false to use a program defined naming scheme instead
             link_name_exclusion: keyword in excluded link. The link is the plaintext, not the link pointer, must be all lowercase to be case insensitive.
-            qcount: Number of threads to be used while scraper urls
+            qcount: Number of threads to be used while scraper urls, default is 6 and hard cap is 10 threads
+
+            
         """
         if folder:
             self.__folder = folder
@@ -140,17 +142,17 @@ class KMP:
         if not qcount or qcount <= 0:
             self.__qcount = 6
         else:
-            self.__qcount = qcount
+            self.__qcount = min(10, qcount)
         
         if not http_codes or len(http_codes) == 0:
             self.__http_codes = [429, 403]
         else:
             self.__http_codes = http_codes
         
-        if tcount and tcount > 0:
-            self.__tcount = tcount
-        else:
+        if not tcount or tcount <= 0:
             self.__tcount = 6
+        else:
+            self.__tcount = min(10, tcount)
 
         if chunksz and chunksz > 0 and chunksz <= 12:
             self.__chunksz = chunksz
