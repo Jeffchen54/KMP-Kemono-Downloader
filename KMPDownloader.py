@@ -24,8 +24,6 @@ from Threadpool import ThreadPool
 import zipextracter
 import alive_progress
 from PersistentCounter import PersistentCounter
-from cfscrape import CloudflareScraper
-
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
@@ -37,17 +35,21 @@ if there is any download thread that was still active, program will hang up.
 - Fixed bug where Pixiv and other non kemono links would lead to infinite retries due to program thinking kemono is trying to rate limit
 - Fixed rare data race bug where 2 threads attempt to create a directory with the same name at the same time
 - Each thread will now have their own session due to sessions not being thread safe
+- Slight program optimizations
+- Improved internal documentation and removed some useless/cluttered bits
+- TODO continue downloading from last point when download fails
+- TODO Separate HTTPS component from KMP class
 @author Jeff Chen
 @version 0.5.5
 @last modified 8/22/2022
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'}
-counter = 0
-now = datetime.now(tz = timezone.utc)
+counter = 0                                 # TODO get rid of this
+now = datetime.now(tz = timezone.utc)       # TODO Also get rid of this
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + now.strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
-CA_FILE = True
+CA_FILE = True                              # TODO unused, get rid of this
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -70,7 +72,8 @@ class DeadThreadPoolException(Error):
 
 class KMP:
     """
-    Kemono.party downloader class
+    Kemono.party downloader class, contains everything needed to download
+    all of Kemono parties resources
     """
     __folder: str               # Folder to download files to
     __unzip: bool               # Unzipping flag
@@ -80,28 +83,26 @@ class KMP:
     __sessions:list             # requests sessions for threads
     __session:requests.Session  # request session for main thread
     __unpacked:bool             # Unpacked download type flag
-    __http_codes:list[int]      # HTTP codes to retry on
-
-    __CONTAINER_PREFIX = "https://kemono.party"
-    __register:HashTable   # Registers a directory, combats multiple posts using the same name
-    __register_mutex:Lock  # Lock for the reguster
-    __fcount:int  # Number of downloaded files
-    __fcount_mutex:Lock   # Mutex for fcount 
-    __failed:int  # Number of downloaded files
-    __failed_mutex:Lock   # Mutex for fcount     
+    __http_codes:list[int]      # list of HTTP codes to retry on
+    __CONTAINER_PREFIX = "https://kemono.party" # Prefix of kemono website
+    __register:HashTable            # Registers a directory, combats multiple posts using the same name
+    __register_mutex:Lock           # Lock for the register
+    __fcount:int                    # Number of downloaded files
+    __fcount_mutex:Lock             # Mutex for fcount 
+    __failed:int                    # Number of downloaded files
+    __failed_mutex:Lock             # Mutex for fcount     
     __post_name_exclusion:list[str] # Keywords in excluded posts
     __link_name_exclusion:list[str] # Keywords in excluded posts
-    __ext_blacklist:HashTable
-    __timeout:int
-    __post_process:list
-    __download_server_name_type:bool
-    __progress:Semaphore
-    __progress_mutex:Lock
-    __qcount:int # Number of threads for scraping URLs
-    __dir_lock:Lock
+    __ext_blacklist:HashTable       # Stores excluded extensions
+    __timeout:int                   # Timeout for network issues
+    __post_process:list             # Directories that require post processing when they contain text only
+    __download_server_name_type:bool    # Switch to use server hashed names instead of custom names
+    __progress:Semaphore                # Semaphore for progress bar, one release means 1 file downloaded
+    __progress_mutex:Lock               # Mutex for semaphore
+    __dir_lock:Lock                     # Mutex for when a directory is being created
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = [], qcount:int|None=None) -> None:
+        link_name_exclusion:list[str] = []) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -116,9 +117,6 @@ class KMP:
             post_name_exclusion: keywords in excluded posts, must be all lowercase to be case insensitive
             download_server_name_type: True to download server file name, false to use a program defined naming scheme instead
             link_name_exclusion: keyword in excluded link. The link is the plaintext, not the link pointer, must be all lowercase to be case insensitive.
-            qcount: Number of threads to be used while scraper urls, default is 6 and hard cap is 10 threads
-
-            
         """
         if folder:
             self.__folder = folder
@@ -139,10 +137,6 @@ class KMP:
         self.__download_server_name_type = download_server_name_type
         self.__link_name_exclusion = link_name_exclusion
         self.__register_mutex = Lock()
-        if not qcount or qcount <= 0:
-            self.__qcount = 6
-        else:
-            self.__qcount = min(10, qcount)
         
         if not http_codes or len(http_codes) == 0:
             self.__http_codes = [429, 403]
@@ -152,8 +146,8 @@ class KMP:
         if not tcount or tcount <= 0:
             self.__tcount = 6
         else:
-            self.__tcount = min(10, tcount)
-
+            self.__tcount = min(8, tcount)
+        # TODO threads not all being generated
         if chunksz and chunksz > 0 and chunksz <= 12:
             self.__chunksz = chunksz
         else:
@@ -169,7 +163,7 @@ class KMP:
             self.__ext_blacklist = None
         # Create session ###########################
         self.__sessions = []
-        for i in range(0, max(self.__tcount, self.__qcount)):
+        for _ in range(0, max(self.__tcount, self.__tcount)):
             session = cfscrape.create_scraper(requests.Session())
             adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
@@ -177,16 +171,16 @@ class KMP:
         self.__session = cfscrape.create_scraper(requests.Session())
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
-    def reset(self):
+    def reset(self) -> None:
         """
         Resets register and download count, should be called if the KMP
-        object will be reused
+        object will be reused; otherwise, downloaded url data will persist
+        and file download count will persist.
         """
         self. __register = HashTable(10)
         self.__fcount = 0
 
-
-    def close(self):
+    def close(self) -> None:
         """
         Closes KMP download session, cannot be reopened, must be called to prevent
         unclosed socket warnings
@@ -197,22 +191,21 @@ class KMP:
 
     def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
         """
-        Downloads file at src. Skips if a file already exists sharing the same fname and size 
+        Downloads file at src. Skips if 
+            (1) a file already exists sharing the same fname and size 
+            (2) Contains blacklisted extensions
+            (3) Has been downloaded already with this KMP instance
         Param:
             src: src of image to download
-            fname: what to name the file to download, with extensions. absolute path including 
-                    file names
+            fname: what to name the file to download, with extensions. Absolute path
+            display_bar: Whether to display download progress bar or not. 
         Pre: If program is called with a thread, it will use a unique session, if called by main, it will use a newly
             generated session that is closed before function terminates
         """
-        # Configure tname
+        close = False
+        # Configure tname and session #######################################################################################################
         if not tname.name:
             tname.name = "default thread name" 
-        
-        
-        close = False
-        # Configure session
-        if not tname.id:
             session = cfscrape.create_scraper(requests.Session())
             adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
@@ -220,16 +213,11 @@ class KMP:
         else:
             session = self.__sessions[tname.id]   
         
-        close = False
-        if not session:
-            session = cfscrape.create_scraper(requests.Session())
-            adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
-            session.mount('http://', adapter)
-            close = True
         logging.debug("Downloading " + fname + " from " + src)
         r = None
         timeout = 0
-        # Grabbing content length 
+        
+        # Grabbing content length  ###########################################################################################################
         while not r:
             try:
                 r = session.request('HEAD', src, timeout=5)
@@ -262,10 +250,9 @@ class KMP:
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 logging.debug("Connection request unanswered, retrying")
         fullsize = r.headers.get('Content-Length')
-        downloaded = 0
-        f = fname.split('\\')[len(fname.split('\\')) - 1]
 
-        # If file cannot be downloaded, it is most likely an invalid file
+
+        # If file does not have a length, it is most likely an invalid file
         if fullsize == None:
             logging.critical("Download was attempted on an undownloadable file, details describe\nSrc: " + src + "\nFname: " + fname)
             jutils.write_to_file(LOG_NAME, "UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
@@ -273,9 +260,12 @@ class KMP:
         # Download and skip duplicate file
         elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
             done = False
+            f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
+            
             while(not done):
                 try:
                     # Get the session
+                    downloaded = 0          # Used for updating the bar
                     data = None
                     while not data:
                         try:
@@ -285,6 +275,7 @@ class KMP:
                             
                     # Download the file with visual bars 
                     if display_bar:
+                        
                         with open(fname, 'wb') as fd, tqdm(
                                 desc=fname,
                                 total=int(fullsize),
@@ -335,10 +326,14 @@ class KMP:
                     os.mkdir(p)
                 self.__dir_lock.release()
                 zipextracter.extract_zip(fname, p, temp=True)
+        
+        # Increment progress mutex
+        # TODO do not increment this is progress  is unused!
         self.__progress_mutex.acquire()
         self.__progress.release()
         self.__progress_mutex.release()
         
+        # Closes session if session was created within this function
         if close:
             session.close()
 
@@ -882,7 +877,7 @@ class KMP:
         self.__dir_lock.release()
         # Read every json on the server and put it in queue
         discordScraper = DiscordToJson()
-        js = discordScraper.discord_lookup_all(serverJs.get("id"), threads=self.__qcount, sessions=self.__sessions)
+        js = discordScraper.discord_lookup_all(serverJs.get("id"), threads=self.__tcount, sessions=self.__sessions)
         
         data = self.__download_discord_js(js, dir, get_list=get_list)
         toReturn = None
@@ -955,7 +950,7 @@ class KMP:
             task_list = Queue(0)
         else:
             task_list = None
-        scrape_pool = ThreadPool(self.__qcount)
+        scrape_pool = ThreadPool(self.__tcount)
         scrape_pool.start_threads()
         # For single window page, we can process it directly since we don't have to flip to next pages
         if '?' in url:
@@ -1143,6 +1138,8 @@ class KMP:
         logging.info("Files downloaded: " + str(self.__fcount))
         if self.__failed > 0:
             logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
+    
+    
     def routine(self, url: str | list[str] | None, unpacked:int | None) -> None:
         """
         Main routine, processes an 3 kinds of artist links specified in the project spec.
@@ -1241,7 +1238,6 @@ def main() -> None:
     urls = False
     unzip = False
     tcount = -1
-    qcount = -1
     chunksz = -1
     unpacked = False
     excluded:list = []
@@ -1298,10 +1294,6 @@ def main() -> None:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
-            elif sys.argv[pointer] == '-q' and len(sys.argv) >= pointer:
-                qcount = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("SCRAPER_THREAD_COUNT -> " + str(qcount))
             elif sys.argv[pointer] == '-c' and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
@@ -1349,7 +1341,7 @@ def main() -> None:
 
     # Run the downloader
     if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded, qcount=qcount)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded)
         
         if experimental or benchmark:
             if unpacked:
