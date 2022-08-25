@@ -2,7 +2,7 @@
 Simple JSON scraper for Kemono.party discord content.
 
 @author: Jeff Chen
-@last modified: 6/12/2022
+@last modified: 8/25/2022
 """
 import time
 from cfscrape import CloudflareScraper
@@ -23,7 +23,11 @@ HEADERS={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 
 
 class DiscordToJson():
-    recent:dict = None
+    """
+    Utility functions used for scraping Kemono Party's Discord to Json data.
+    Offers functions for scrapping Discord sub channel IDs and scraping the channels themselves.
+    """
+    __recent:dict = None
     def discord_lookup(self, discordID:str, scraper:CloudflareScraper) -> dict:
         """
         Looks up a discord id using Kemono.party's API and returns 
@@ -55,7 +59,8 @@ class DiscordToJson():
 
     def discord_lookup_all(self, channelID:str|None, threads:int=6, sessions:list=None)->dict|list:
         """
-        Similar to discord_channel_lookup() but processes everything, not just in segments
+        Similar to discord_channel_lookup() but processes everything, not just in segments.
+        NOTE: will take a significant amount of time if discord channel is of considerable size
         
         Param:
             threads: Number of threads to use while looking up js
@@ -80,7 +85,7 @@ class DiscordToJson():
             [session.mount('http://', adapter) for session,adapter in zip(sessions,adapters)]
         
         # Loop until no more data left
-        [pool.enqueue((self.discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, sessions[i], main_sem, js_buff, js_buff_lock, pool)))\
+        [pool.enqueue((self.__discord_lookup_thread_job, (threads, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, i * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, sessions[i], main_sem, js_buff, js_buff_lock, pool)))\
             for i in range(0, threads)]
 
         
@@ -97,7 +102,7 @@ class DiscordToJson():
         # Return json
         return js_buff
     
-    def discord_lookup_thread_job(self, tcount:int, skip:int, curr:int, channelID:str, scraper:CloudflareScraper, main_sem:Semaphore, js_buff:list, js_buff_lock:Lock, pool:ThreadPool) -> None:
+    def __discord_lookup_thread_job(self, tcount:int, skip:int, curr:int, channelID:str, scraper:CloudflareScraper, main_sem:Semaphore, js_buff:list, js_buff_lock:Lock, pool:ThreadPool) -> None:
         """
         Thread job for worker threads in discord_lookup_all. Processes a segment of 
         data then sends its next segment into thread queue
@@ -114,9 +119,9 @@ class DiscordToJson():
             pool: Threadpool used for this function
         Pre: main_sem begins on zero
         Pre: tcount number of tasks were/is going to be submitted into threadpool 
+        NOTE: that cond isn't used because there is a situation where broadcast may be 
+        called before calling thread goes to sleep
         """
-        """ Note that cond isn't used because there is a situation where broadcast may be 
-        called before calling thread goes to sleep"""
         data = None
         # Process current task
         url = DISCORD_CHANNEL_CONTENT_PRE_API + channelID + DISCORD_CHANNEL_CONTENT_SUF_API + str(curr)
@@ -150,7 +155,7 @@ class DiscordToJson():
             js_buff_lock.release()
             
             # Create and add task back into threadpool
-            pool.enqueue((self.discord_lookup_thread_job, (tcount, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, curr + tcount * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, scraper, main_sem, js_buff, js_buff_lock, pool)))
+            pool.enqueue((self.__discord_lookup_thread_job, (tcount, DISCORD_CHANNEL_CONTENT_SKIP_INCRE, curr + tcount * DISCORD_CHANNEL_CONTENT_SKIP_INCRE, channelID, scraper, main_sem, js_buff, js_buff_lock, pool)))
        
         # If is done, broadcast to main thread
         else:
@@ -189,22 +194,22 @@ class DiscordToJson():
         """
         # If None sent but no history, quit
         if not channelID:
-            assert(self.recent)
+            assert(self.__recent)
 
         # If no history, create initial history
-        if not self.recent:
-            self.recent = {"channelID" : channelID, "skip" : 0}  # it doesn't exist yet, so initialize it
+        if not self.__recent:
+            self.__recent = {"channelID" : channelID, "skip" : 0}  # it doesn't exist yet, so initialize it
         
         # If history exists and matches, use old data
-        if(not channelID or channelID == self.recent.get("channelID")):
-            skip = self.recent.get("skip")
-            self.recent = {"channelID" : self.recent.get("channelID"), "skip" : skip + DISCORD_CHANNEL_CONTENT_SKIP_INCRE}
-            channelID = self.recent.get("channelID")
+        if(not channelID or channelID == self.__recent.get("channelID")):
+            skip = self.__recent.get("skip")
+            self.__recent = {"channelID" : self.__recent.get("channelID"), "skip" : skip + DISCORD_CHANNEL_CONTENT_SKIP_INCRE}
+            channelID = self.__recent.get("channelID")
 
         # If history exists but does not match, start from beginning
         else:
             skip = 0
-            self.recent = {"channelID" : channelID, "skip" : skip + DISCORD_CHANNEL_CONTENT_SKIP_INCRE}
+            self.__recent = {"channelID" : channelID, "skip" : skip + DISCORD_CHANNEL_CONTENT_SKIP_INCRE}
         
         # Grab data
         data = None
@@ -221,6 +226,3 @@ class DiscordToJson():
 
         # Return json
         return js
-
-    
-
