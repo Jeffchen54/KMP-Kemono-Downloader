@@ -37,19 +37,18 @@ if there is any download thread that was still active, program will hang up.
 - Each thread will now have their own session due to sessions not being thread safe
 - Slight program optimizations
 - Improved internal documentation and removed some useless/cluttered bits
-- TODO continue downloading from last point when download fails
+- Now after a download fails to complete, retries continue from where the download left off
+- Fixed rare discord bug where program keeps restarting on url that already contains https://kemono in it
 - TODO Separate HTTPS component from KMP class
+- TODO add debug mode
 @author Jeff Chen
 @version 0.5.5
 @last modified 8/22/2022
 """
-HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'}
-counter = 0                                 # TODO get rid of this
-now = datetime.now(tz = timezone.utc)       # TODO Also get rid of this
+HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
-LOG_NAME = LOG_PATH + "LOG - " + now.strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
+LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
-CA_FILE = True                              # TODO unused, get rid of this
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -147,7 +146,7 @@ class KMP:
             self.__tcount = 6
         else:
             self.__tcount = min(8, tcount)
-        # TODO threads not all being generated
+
         if chunksz and chunksz > 0 and chunksz <= 12:
             self.__chunksz = chunksz
         else:
@@ -248,7 +247,7 @@ class KMP:
                         return
 
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                logging.debug("Connection request unanswered, retrying")
+                logging.debug("Connection request unanswered, retrying -> URL: {url}".format(url=src))
         fullsize = r.headers.get('Content-Length')
 
 
@@ -259,26 +258,27 @@ class KMP:
         
         # Download and skip duplicate file
         elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
+            headers = HEADERS
+            mode = 'wb'
             done = False
             f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
-            
+            downloaded = 0          # Used for updating the bar
             while(not done):
                 try:
                     # Get the session
-                    downloaded = 0          # Used for updating the bar
                     data = None
                     while not data:
                         try:
-                            data = session.get(src, stream=True, timeout=5, headers=HEADERS, verify=CA_FILE)
+                            data = session.get(src, stream=True, timeout=5, headers=headers)
                         except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                             logging.debug("Connection timeout")
+                             logging.debug("Connection timeout on {url}".format(url=src))
                             
                     # Download the file with visual bars 
                     if display_bar:
                         
-                        with open(fname, 'wb') as fd, tqdm(
+                        with open(fname, mode) as fd, tqdm(
                                 desc=fname,
-                                total=int(fullsize),
+                                total=int(fullsize) - downloaded,
                                 unit='iB',
                                 unit_scale=True,
                                 leave=False,
@@ -309,6 +309,11 @@ class KMP:
                         self.__fcount_mutex.release()
                     else:
                         logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + fname)
+                        headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
+                                  'Range': 'bytes=' + str(downloaded) + '-' + fullsize}
+                        logging.info(headers)
+                        mode = 'ab'
+                        logging.info("Downloaded {d}".format(d=downloaded))
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 except FileNotFoundError:
@@ -328,7 +333,7 @@ class KMP:
                 zipextracter.extract_zip(fname, p, temp=True)
         
         # Increment progress mutex
-        # TODO do not increment this is progress  is unused!
+        # TODO do not increment when progress  is unused!
         self.__progress_mutex.acquire()
         self.__progress.release()
         self.__progress_mutex.release()
@@ -528,7 +533,7 @@ class KMP:
         reqs = None
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
+                reqs = self.__session.get(url, timeout=5, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -539,7 +544,7 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
+                    reqs = self.__session.get(url, timeout=5, headers=HEADERS)
                 except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                     logging.debug("Connection timeout")
             soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -730,7 +735,7 @@ class KMP:
         # Make a connection
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
+                reqs = self.__session.get(url, timeout=5, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -758,7 +763,7 @@ class KMP:
                 reqs = None
                 while not reqs:
                     try:
-                        reqs = self.__session.get(url + suffix + str(counter), timeout=5, headers=HEADERS, verify=CA_FILE)
+                        reqs = self.__session.get(url + suffix + str(counter), timeout=5, headers=HEADERS)
                     except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                          logging.debug("Connection timeout")
                 soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -784,7 +789,7 @@ class KMP:
                     [0] and download data is [1]
         """
         imageDir = titleDir + "images\\"
-        
+        counter = 0
         task_list = None
         if get_list:
             task_list = []
@@ -794,7 +799,6 @@ class KMP:
             os.mkdir(imageDir)
         self.__dir_lock.release()
         stringBuilder = []
-        global counter
         # Process each json individually
         for jsCluster in reversed(jsList):
             for js in reversed(jsCluster): # Results became a list within a list due to multiprocessing update
@@ -830,7 +834,11 @@ class KMP:
 
                 # Add attachments
                 for i in js.get('attachments'):
-                    url = self.__CONTAINER_PREFIX + i.get('path')
+                    if "https" != i.get('path')[0:5]:
+                        url = self.__CONTAINER_PREFIX + i.get('path')
+                    else:
+                        url = i.get('path')
+                    logging.info(url)
                     stringBuilder.append(url + '\n\n')
                     
                     # Check if the attachment is dupe
@@ -888,8 +896,6 @@ class KMP:
             toReturn = data[1]
         else:
             jutils.write_utf8("".join(data), dir + 'discord__content.txt', 'a')
-        global counter
-        counter = 0
         return toReturn
 
 
@@ -961,7 +967,7 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=5, headers=HEADERS, verify=CA_FILE)
+                    reqs = self.__session.get(url, timeout=5, headers=HEADERS)
                 except(requests.exceptions.ConnectionError ,requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                      logging.debug("Connection timeout")
             if(reqs.status_code >= 400):
@@ -1203,8 +1209,7 @@ def help() -> None:
         -f <textfile.txt> : Bulk download from text file containing links\n\
         -d <path> : REQUIRED - Set download path for single instance, must use '\\'\n\
         -c <#> : Adjust download chunk size in bytes (Default is 64M)\n\
-        -t <#> : Change download thread count (default is 6)\n\
-        -q <#> : Change url scraping thread counter (default is 6)\n")
+        -t <#> : Change download thread count (default is 6)\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1223,7 +1228,7 @@ def help() -> None:
         -r <#> : Maximum number of HTTP code retries, default is infinite\n\
         -h : Help\n\
         -EXPERIMENTAL : Enable experimental mode\n\
-        -BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything")
+        -BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything\n")
 
 def main() -> None:
     """
