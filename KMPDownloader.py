@@ -39,8 +39,9 @@ if there is any download thread that was still active, program will hang up.
 - Improved internal documentation and removed some useless/cluttered bits
 - Now after a download fails to complete, retries continue from where the download left off
 - Fixed rare discord bug where program keeps restarting on url that already contains https://kemono in it
+- Max thread count of 20 implemented
+- Fixed cases where failed downloads were not being registered even though failures were being written to log
 - TODO Separate HTTPS component from KMP class
-- TODO add debug mode
 @author Jeff Chen
 @version 0.5.5
 @last modified 8/22/2022
@@ -145,7 +146,8 @@ class KMP:
         if not tcount or tcount <= 0:
             self.__tcount = 6
         else:
-            self.__tcount = min(8, tcount)
+            # TODO remove
+            self.__tcount = min(20, tcount)
 
         if chunksz and chunksz > 0 and chunksz <= 12:
             self.__chunksz = chunksz
@@ -241,6 +243,9 @@ class KMP:
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
                         jutils.write_to_file(LOG_NAME, "{code} TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+                        self.__failed_mutex.acquire()
+                        self.__failed += 1
+                        self.__failed_mutex.release()
                         self.__progress_mutex.acquire()
                         self.__progress.release()
                         self.__progress_mutex.release()
@@ -255,6 +260,9 @@ class KMP:
         if fullsize == None:
             logging.critical("Download was attempted on an undownloadable file, details describe\nSrc: " + src + "\nFname: " + fname)
             jutils.write_to_file(LOG_NAME, "UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+            self.__failed_mutex.acquire()
+            self.__failed += 1
+            self.__failed_mutex.release()
         
         # Download and skip duplicate file
         elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
@@ -311,9 +319,7 @@ class KMP:
                         logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + fname)
                         headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
                                   'Range': 'bytes=' + str(downloaded) + '-' + fullsize}
-                        logging.info(headers)
                         mode = 'ab'
-                        logging.info("Downloaded {d}".format(d=downloaded))
                 except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                     logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
                 except FileNotFoundError:
@@ -838,7 +844,6 @@ class KMP:
                         url = self.__CONTAINER_PREFIX + i.get('path')
                     else:
                         url = i.get('path')
-                    logging.info(url)
                     stringBuilder.append(url + '\n\n')
                     
                     # Check if the attachment is dupe
