@@ -187,7 +187,8 @@ if there is any download thread that was still active, program will hang up.
 - Fixed rare discord bug where program appends prefix on url that already contains https://kemono in it
 - Max thread count of 20 implemented
 - Fixed cases where failed downloads were not being registered even though failures were being written to log
-* Correction to all services from non discord services made. 0.5.5 is for all services, documentation was wrong.
+    
+*Correction to all services from non discord services made. 0.5.5 is for all services, documentation was wrong.
 
 ## Changelog 0.5.4:
 - Added experimental download mode
