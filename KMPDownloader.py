@@ -1216,7 +1216,7 @@ def help() -> None:
     """    
     logging.info("DOWNLOAD CONFIG - How files are downloaded\n\
         -f <textfile.txt> : Bulk download from text file containing links\n\
-        -d <path> : REQUIRED - Set download path for single instance, must use '\\'\n\
+        -d <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
         -c <#> : Adjust download chunk size in bytes (Default is 64M)\n\
         -t <#> : Change download thread count (default is 6)\n")
         
@@ -1227,10 +1227,10 @@ def help() -> None:
         -l \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n")
     
     logging.info("DOWNLOAD FILE STRUCTURE - How to organize downloads\n\
-        -s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files\n\
+        -s : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files\n\
         -u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
-        -e : Download server name instead of program defined naming scheme\n\
-        -v : Enables unzipping of files automatically\n")
+        -e : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord\n\
+        -v : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
