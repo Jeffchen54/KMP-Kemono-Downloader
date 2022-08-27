@@ -44,7 +44,7 @@ if there is any download thread that was still active, program will hang up.
 - TODO Separate HTTPS component from KMP class
 @author Jeff Chen
 @version 0.5.5
-@last modified 8/22/2022
+@last modified 8/27/2022
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -118,6 +118,7 @@ class KMP:
             download_server_name_type: True to download server file name, false to use a program defined naming scheme instead
             link_name_exclusion: keyword in excluded link. The link is the plaintext, not the link pointer, must be all lowercase to be case insensitive.
         """
+        tname.id = None
         if folder:
             self.__folder = folder
         else:
@@ -146,7 +147,6 @@ class KMP:
         if not tcount or tcount <= 0:
             self.__tcount = 6
         else:
-            # TODO remove
             self.__tcount = min(20, tcount)
 
         if chunksz and chunksz > 0 and chunksz <= 12:
@@ -172,22 +172,23 @@ class KMP:
         self.__session = cfscrape.create_scraper(requests.Session())
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
+        
     def reset(self) -> None:
         """
         Resets register and download count, should be called if the KMP
         object will be reused; otherwise, downloaded url data will persist
-        and file download count will persist.
+        and file download and failed count will persist.
         """
         self. __register = HashTable(10)
         self.__fcount = 0
+        self.__failed = 0
 
     def close(self) -> None:
         """
         Closes KMP download session, cannot be reopened, must be called to prevent
-        unclosed socket warnings
+        unclosed socket warnings 
         """
-        for session in self.__sessions:
-            session.close()
+        [session.close() for session in self.__sessions]
         self.__session.close()
 
     def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
@@ -199,7 +200,8 @@ class KMP:
         Param:
             src: src of image to download
             fname: what to name the file to download, with extensions. Absolute path
-            display_bar: Whether to display download progress bar or not. 
+            display_bar: Whether to display download progress bar or not. If False, display bar is not displayed and self.__progress 
+                    is incremented instead.
         Pre: If program is called with a thread, it will use a unique session, if called by main, it will use a newly
             generated session that is closed before function terminates
         """
@@ -231,9 +233,10 @@ class KMP:
                             self.__failed_mutex.acquire()
                             self.__failed += 1
                             self.__failed_mutex.release()
-                            self.__progress_mutex.acquire()
-                            self.__progress.release()
-                            self.__progress_mutex.release()
+                            if not display_bar:
+                                self.__progress_mutex.acquire()
+                                self.__progress.release()
+                                self.__progress_mutex.release()
                             return
                         else:
                             timeout += 1
@@ -246,15 +249,17 @@ class KMP:
                         self.__failed_mutex.acquire()
                         self.__failed += 1
                         self.__failed_mutex.release()
-                        self.__progress_mutex.acquire()
-                        self.__progress.release()
-                        self.__progress_mutex.release()
+                        if not display_bar:
+                            self.__progress_mutex.acquire()
+                            self.__progress.release()
+                            self.__progress_mutex.release()
                         return
 
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 logging.debug("Connection request unanswered, retrying -> URL: {url}".format(url=src))
         fullsize = r.headers.get('Content-Length')
 
+        f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
 
         # If file does not have a length, it is most likely an invalid file
         if fullsize == None:
@@ -269,7 +274,6 @@ class KMP:
             headers = HEADERS
             mode = 'wb'
             done = False
-            f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
             downloaded = 0          # Used for updating the bar
             while(not done):
                 try:
@@ -339,10 +343,10 @@ class KMP:
                 zipextracter.extract_zip(fname, p, temp=True)
         
         # Increment progress mutex
-        # TODO do not increment when progress  is unused!
-        self.__progress_mutex.acquire()
-        self.__progress.release()
-        self.__progress_mutex.release()
+        if not display_bar:
+            self.__progress_mutex.acquire()
+            self.__progress.release()
+            self.__progress_mutex.release()
         
         # Closes session if session was created within this function
         if close:
@@ -353,13 +357,13 @@ class KMP:
         Trims fname, returns result. Extensions are kept:
         For example
         
-        When ext length of ?fname.ext token is <= 6:
+        When ext length of ?<filename>.ext token is <= 6:
         "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.txt?f=File.txt"
         -> File.txt
 
         Or
 
-        When ext length of ?fname.ext token is > 6:
+        When ext length of ?<filename>.ext token is > 6:
         "/data/2f/33/2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.jpg?f=File.jpe%3Ftoken-time%3D1570752000..."
         ->2f33425e67b99de681eb7638ef2c7ca133d7377641cff1c14ba4c4f133b9f4d6.jpg
 
@@ -371,11 +375,10 @@ class KMP:
 
         Param: 
             fname: file name
-        Pre: fname follows above convention
+        Pre: fname follows above conventions
         Return: trimmed filename with extension
         """
         # Case 3, space
-             # Case 3, space
         case3 = fname.partition(' ')[2]
         if case3 != fname and len(case3) > 0:
             return re.sub(r'[^\w\-_\. ]|[\.]$', '',
@@ -394,14 +397,15 @@ class KMP:
 
     def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, task_list:Queue|None, counter:PersistentCounter) -> Queue:
         """
-        Puts all urls in imgLinks into download queue
+        Puts all urls in imgLinks in threadpool download queue. If task_list is not None, then
+        all urls will be added to task_list instead of being added to download queue.
 
         Param:
-        imgLinks: all image links within a container
+        imgLinks: all image links within a Kemono container
         dir: where to save the images
-        base_name: Prefix to name files, None for just counter
-        enqueue: Whether to queue to task or not
+        base_name: Prefix to name files, None for just a counter
         task_list: list to store tasks into instead of directly processing them, None to directly process them
+        counter: a counter to increment for each file and used to rename files
         
         Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
         Return modified tasklist, is None if task_list param is None
@@ -432,7 +436,7 @@ class KMP:
                         src = self.__CONTAINER_PREFIX + target
                 else:
                     src = None
-                
+            # If a src is detected, it is added to the download queue/task list    
             if src:
                 logging.debug("Extracted content link: " + src)
                 
@@ -500,7 +504,7 @@ class KMP:
 
     def __process_container(self, url: str, root: str, task_list:Queue|None) -> Queue:
         """
-        Processes a container which is the page used to store post content
+        Processes a kemono container which is the page used to store post content
 
         Supports
         - downloading all visable images

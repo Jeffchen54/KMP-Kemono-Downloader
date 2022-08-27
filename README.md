@@ -109,7 +109,7 @@ https://kemono.party/service/user/xxxxxx?o=25: Downloads all artist works on tha
 https://kemono.party/service/user/xxxxxx/post/xxx: Downloads specific artist work
 
 ## Important Download information:
-- There are discord servers with up to 1 million posts, this will usually take overnight to a day to complete as
+- There are discord servers with up to 1 million posts, this will usually take multiple days to complete as
 well as needing a significant amount of memory. If you are downloading from other services, it will be much quicker
 than from discord due to the extra processing that is needed for discord content. 
 
@@ -170,6 +170,22 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
 These bugs were accounted for but not enough testing has been conducted
   
 None
+
+## Changelog 0.5.5
+- URL scraping for non discord services is now multithreaded, significantly decreases web scraping time
+- Slightly improved url web scraping efficiency
+- Fixed Experimental mode bug where download count started at 1 instead of zero, main thread will exit early and
+if there is any download thread that was still active, program will hang up.
+- Fixed bug where Pixiv and other non kemono links would lead to infinite retries due to program thinking kemono is trying to rate limit
+- Fixed rare data race bug where 2 threads attempt to create a directory with the same name at the same time
+- Each thread will now have their own session due to sessions not being thread safe
+- Slight program optimizations
+- Improved internal documentation and removed some useless/cluttered bits
+- Now after a download fails to complete, retries continue from where the download left off, solves issue where retries become infinite in some cases
+- Fixed rare discord bug where program appends prefix on url that already contains https://kemono in it
+- Max thread count of 20 implemented
+- Fixed cases where failed downloads were not being registered even though failures were being written to log
+
 ## Changelog 0.5.4:
 - Added experimental download mode
 - Fixed several edge cases in discord attachment downloads and improved error messaging

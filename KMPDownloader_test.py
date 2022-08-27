@@ -6,6 +6,7 @@ from KMPDownloader import KMP
 import os
 from KMPDownloader import DeadThreadPoolException
 import logging
+from Threadpool import tname
 """
 Tests KMPDownloader.py,
 ##################################################
@@ -23,6 +24,7 @@ class KMPTestCase(unittest.TestCase):
         """
         logging.basicConfig(level=logging.INFO)
         self.KMP = None
+        tname.id = None
 
     @classmethod
     def setUpClass(cls):
@@ -749,19 +751,19 @@ do minor editing to translate RMMZ based game.\nhttps://store.steampowered.com/a
         self.KMP = KMP(self.tempdir, unzip=True, tcount=3, chunksz=None)
         # All Artist Page
         self.KMP.alt_routine("https://kemono.party/fanbox/user/836862", unpacked=2)
-        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "tsumikisata"), 544))        
+        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "tsumikisata")), 544)        
         # Single Artist Page
         self.KMP.alt_routine("https://kemono.party/patreon/user/19467060?o=25", unpacked=2)
-        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "katecavanaugh"), 86))        
+        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "katecavanaugh")), 86)        
        
         # Single Artist Work
         self.KMP.alt_routine("https://kemono.party/patreon/user/169359/post/27626311", unpacked=2)
-        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "seductionrl"), 86))        
+        self.assertEquals(self.getNumFiles(os.path.join(self.tempdir, "seductionrl")), 8)        
         
         # Discord Channel
-        
+        # TODO
         # Text file
-
+        # TODO
     def getDirSz(self, dir: str) -> int:
         """
         Returns directory and its content size
