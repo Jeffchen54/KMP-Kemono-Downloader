@@ -174,7 +174,7 @@ These bugs were accounted for but not enough testing has been conducted
 None
 
 ## Changelog 0.5.5
-- URL scraping for non discord services is now multithreaded, significantly decreases web scraping time
+- URL scraping for all services is now multithreaded, significantly decreases web scraping time*
 - Slightly improved url web scraping efficiency
 - Fixed Experimental mode bug where download count started at 1 instead of zero, main thread will exit early and
 if there is any download thread that was still active, program will hang up.
@@ -187,6 +187,7 @@ if there is any download thread that was still active, program will hang up.
 - Fixed rare discord bug where program appends prefix on url that already contains https://kemono in it
 - Max thread count of 20 implemented
 - Fixed cases where failed downloads were not being registered even though failures were being written to log
+* Correction to all services from non discord services made. 0.5.5 is for all services, documentation was wrong.
 
 ## Changelog 0.5.4:
 - Added experimental download mode
