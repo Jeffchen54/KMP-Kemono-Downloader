@@ -89,7 +89,9 @@ TROUBLESHOOTING - Solutions to possible issues
 
 -h : Help
 
--EXPERIMENTAL : Enable experimental mode
+--EXPERIMENTAL : Enable experimental mode
+
+--BENCHMARK : Benchmark URL scraping, does not download files
 
  Default file organization is packed, all works will have their own folder within an artist folder.
     
