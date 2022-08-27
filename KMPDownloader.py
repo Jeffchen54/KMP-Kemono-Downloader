@@ -1236,8 +1236,8 @@ def help() -> None:
         -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
         -r <#> : Maximum number of HTTP code retries, default is infinite\n\
         -h : Help\n\
-        -EXPERIMENTAL : Enable experimental mode\n\
-        -BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything\n")
+        --EXPERIMENTAL : Enable experimental mode\n\
+        --BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything\n")
 
 def main() -> None:
     """
@@ -1274,7 +1274,7 @@ def main() -> None:
                 unzip = True
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
-            elif sys.argv[pointer] == '-EXPERIMENTAL':
+            elif sys.argv[pointer] == '--EXPERIMENTAL':
                 experimental = True
                 pointer += 1
                 logging.info("EXPERIMENTAL -> " + str(experimental))
@@ -1287,7 +1287,7 @@ def main() -> None:
                 partial_unpack = False
                 pointer += 1
                 logging.info("UNPACKED -> TRUE")
-            elif sys.argv[pointer] == '-BENCHMARK':
+            elif sys.argv[pointer] == '--BENCHMARK':
                 benchmark = True
                 pointer += 1
                 logging.info("BENCHMARK -> TRUE")
