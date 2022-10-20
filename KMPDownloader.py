@@ -757,7 +757,7 @@ class KMP:
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
 
-        contLinks = soup.find_all("div", class_="post-card__link")
+        contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
         suffix = "?o="
         counter = 0
 
@@ -765,11 +765,12 @@ class KMP:
         while contLinks:
             # Process all links on page
             for link in contLinks:
-                content = link.find("a")
-                pool.enqueue((self.__process_container, (self.__CONTAINER_PREFIX + content.get('href'), titleDir, task_list,)))
+                
+                content = link['href']
+                pool.enqueue((self.__process_container, (self.__CONTAINER_PREFIX + content, titleDir, task_list,)))
             if continuous:
                 # Move to next window
-                counter += 25
+                counter += 50       # Adjusted to 50 for the new site
                 reqs = None
                 while not reqs:
                     try:
@@ -778,7 +779,7 @@ class KMP:
                          logging.debug("Connection timeout")
                 soup = BeautifulSoup(reqs.text, 'html.parser')
                 reqs.close()
-                contLinks = soup.find_all("div", class_="post-card__link")
+                contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
             else:
                 contLinks = None
 
