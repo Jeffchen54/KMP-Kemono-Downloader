@@ -122,6 +122,12 @@ than from discord due to the extra processing that is needed for discord content
 - Files downloaded with a counter 0..n where 0 is the first file on the page and n is the last file on the page
 
 ## Troubleshooting
+  ### Program appears frozen during downloading or stops after a few downloads:
+  If the program stops displaying any output and appears to be frozen, please follow the following steps:
+  1. Verify you have an internet connection.
+  2. Verify that you can access Kemono party on a web browser.
+  3. If the above are true, it usually means that your downloads are being halted from the site from downloading too fast. Please use the -t switch to reduce the number of download threads. 
+
   ### Password protected directory:
     atool: ... cmdlist_func = <function extract_7z at 0x000001DB5A894700> 
     patool: ... kwargs={'password': None} args=('C:/Users/chenj/Downloads/KMPDownloader/pass_2.7z', None, 'C:\\7-Zip\\7z.EXE', -1, False,       'C:\\Users\\chenj\\Downloads\\KMPDownloader')
