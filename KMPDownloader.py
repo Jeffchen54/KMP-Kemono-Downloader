@@ -14,7 +14,6 @@ import requests.adapters
 from datetime import datetime, timezone
 
 
-import jutils
 from Threadpool import tname
 from DiscordtoJson import DiscordToJson
 from HashTable import HashTable
@@ -28,19 +27,8 @@ from PersistentCounter import PersistentCounter
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- URL scraping for non discord services is now multithreaded, explosively decreases web scraping time
-- Slightly improved url web scraping efficiency
-- Fixed Experimental mode bug where download count started at 1 instead of zero, main thread will exit early and
-if there is any download thread that was still active, program will hang up.
-- Fixed bug where Pixiv and other non kemono links would lead to infinite retries due to program thinking kemono is trying to rate limit
-- Fixed rare data race bug where 2 threads attempt to create a directory with the same name at the same time
-- Each thread will now have their own session due to sessions not being thread safe
-- Slight program optimizations
-- Improved internal documentation and removed some useless/cluttered bits
-- Now after a download fails to complete, retries continue from where the download left off
-- Fixed rare discord bug where program keeps restarting on url that already contains https://kemono in it
-- Max thread count of 20 implemented
-- Fixed cases where failed downloads were not being registered even though failures were being written to log
+- Adjusted thread count to a more reasonable amount
+- Default thread count now is 1 thread
 - TODO Separate HTTPS component from KMP class
 @author Jeff Chen
 @version 0.5.5
@@ -145,9 +133,9 @@ class KMP:
             self.__http_codes = http_codes
         
         if not tcount or tcount <= 0:
-            self.__tcount = 6
+            self.__tcount = 1
         else:
-            self.__tcount = min(20, tcount)
+            self.__tcount = min(3, tcount)
 
         if chunksz and chunksz > 0 and chunksz <= 12:
             self.__chunksz = chunksz
