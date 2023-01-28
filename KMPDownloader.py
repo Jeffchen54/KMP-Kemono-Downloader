@@ -23,18 +23,27 @@ from Threadpool import ThreadPool
 import zipextracter
 import alive_progress
 from PersistentCounter import PersistentCounter
+import jutils
+from DB import DB
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 - Adjusted thread count to a more reasonable amount
 - Default thread count now is 1 thread
+- Updated user agent
+- Added time between downloads.
+- Added updater sqllite3 module
+-- Saves all artist directories and their most recently uploaded work that was downloaded
+-- Updater saves download path for artist directories, all updates are saved to that specific folder, not the download folder path
+-- Only a single directory for a specific artists is tracked, an existing entry is overriden if an artist works is downloaded again.
+-- Switch for tracking artists and for updating 
 - TODO Separate HTTPS component from KMP class
 @author Jeff Chen
 @version 0.5.5
-@last modified 8/27/2022
+@last modified 1/28/2023
 """
-HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
+HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
@@ -88,9 +97,13 @@ class KMP:
     __progress:Semaphore                # Semaphore for progress bar, one release means 1 file downloaded
     __progress_mutex:Lock               # Mutex for semaphore
     __dir_lock:Lock                     # Mutex for when a directory is being created
+    __wait:float                        # Wait time between downloads in seconds
+    __db:DB                             # Name of database
+    __update:bool                       # True for update mode, false for download mode
+    
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = []) -> None:
+        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -105,11 +118,15 @@ class KMP:
             post_name_exclusion: keywords in excluded posts, must be all lowercase to be case insensitive
             download_server_name_type: True to download server file name, false to use a program defined naming scheme instead
             link_name_exclusion: keyword in excluded link. The link is the plaintext, not the link pointer, must be all lowercase to be case insensitive.
+            wait: time in seconds to wait in between downloads.
+            db_name: database name, this object creates or extends upon 2 tables named Parent & Child
+            track: true to add entries to database, false otherwise
+            update: Routines update instead of downloading artists
         """
         tname.id = None
         if folder:
             self.__folder = folder
-        else:
+        elif not update:
             raise UnspecifiedDownloadPathException
         self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
@@ -126,6 +143,8 @@ class KMP:
         self.__download_server_name_type = download_server_name_type
         self.__link_name_exclusion = link_name_exclusion
         self.__register_mutex = Lock()
+        self.__db = DB(db_name)
+        self.__update = update
         
         if not http_codes or len(http_codes) == 0:
             self.__http_codes = [429, 403]
@@ -136,6 +155,11 @@ class KMP:
             self.__tcount = 1
         else:
             self.__tcount = min(3, tcount)
+            
+        if wait < 0:
+            self.__wait = 0.25
+        else:
+            self.__wait = wait
 
         if chunksz and chunksz > 0 and chunksz <= 12:
             self.__chunksz = chunksz
@@ -150,6 +174,13 @@ class KMP:
                 self.__ext_blacklist.hashtable_add(KVPair(ext, ext))
         else:
             self.__ext_blacklist = None
+        
+        # Create database and 2 tables #############
+        if track or update:
+            self.__db.executeNCommit("CREATE TABLE IF NOT EXISTS Parent (url TEXT, type TEXT, latest TEXT, destination TEXT)")
+        else:
+            self.__db = None
+        
         # Create session ###########################
         self.__sessions = []
         for _ in range(0, max(self.__tcount, self.__tcount)):
@@ -174,10 +205,14 @@ class KMP:
     def close(self) -> None:
         """
         Closes KMP download session, cannot be reopened, must be called to prevent
-        unclosed socket warnings 
+        unclosed socket warnings. Database is processed and closed here as well.
         """
         [session.close() for session in self.__sessions]
         self.__session.close()
+        
+        if self.__db:
+            self.__db.commit()
+            self.__db.close()
 
     def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
         """
@@ -339,6 +374,9 @@ class KMP:
         # Closes session if session was created within this function
         if close:
             session.close()
+        
+        # Sleep before exiting
+        time.sleep(self.__wait)
 
     def __trim_fname(self, fname: str) -> str:
         """
@@ -712,7 +750,7 @@ class KMP:
         shutil.rmtree(src)    
         return
 
-    def __process_window(self, url: str, continuous: bool, get_list:bool=False, pool:ThreadPool|None=None) -> Queue:
+    def __process_window(self, url: str, continuous: bool, get_list:bool=False, pool:ThreadPool|None=None, stop_url:str = None, override_path:str = None) -> Queue:
         """
         Processes a single main artist window, a window is a page where multiple artist works can be seen
 
@@ -721,6 +759,8 @@ class KMP:
             continuous: True to attempt to visit next pages of content, False to not
             get_list: Return a list of tasks instead of processing the data immediately
             pool: None for single thread or an initialized pool for multithreading
+            stop_url: url to stop on, is not processed
+            override_path: Download path to use
         Return: If get_list is true, a list of tasks needed to process the data is returned.
         Post: pool may not have completed all of its tasks 
         """
@@ -730,6 +770,7 @@ class KMP:
         
         if get_list:
             task_list = Queue(0)
+             
         # Make a connection
         while not reqs:
             try:
@@ -740,7 +781,7 @@ class KMP:
         reqs.close()
         # Create directory
         artist = soup.find("meta", attrs={'name': 'artist_name'})
-        titleDir = self.__folder + re.sub(r'[^\w\-_\. ]|[\.]$', '',
+        titleDir = (override_path if override_path else self.__folder) + re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           artist.get('content')) + "\\"
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
@@ -748,13 +789,30 @@ class KMP:
         contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
         suffix = "?o="
         counter = 0
+                    
+        # Update db if window is continuous
+        if continuous and self.__db:
+            # Check if db entry already exists
+            entry = self.__db.execute(("SELECT url FROM Parent WHERE url = ?", (url,),))
+             
+            # If it already exists, remove the entry
+            if entry:
+                self.__db.execute(("DELETE FROM Parent WHERE url = ?", (url,),))
+
+            # Insert updated entry
+            self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?, ?)", (url, self.__CONTAINER_PREFIX + contLinks[0]['href'] if len(contLinks) > 0 else None, override_path if override_path else self.__folder,),))
+
 
         # Process each window
         while contLinks:
             # Process all links on page
             for link in contLinks:
-                
                 content = link['href']
+                
+                # If stop url is encounter, return from the function
+                if(self.__CONTAINER_PREFIX + content == stop_url):
+                    return task_list
+                
                 pool.enqueue((self.__process_container, (self.__CONTAINER_PREFIX + content, titleDir, task_list,)))
             if continuous:
                 # Move to next window
@@ -984,10 +1042,16 @@ class KMP:
         elif 'discord' in url:
             task_list = self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\", get_list=get_list)
 
+            # Add entry to database
+            if self.__db:
+                self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?)", (url, self.__folder + url.rpartition('/')[2] + "\\")))
 
         # For multiple window pages
         elif 'user' in url:
             task_list = self.__process_window(url, True, get_list=get_list, pool=scrape_pool)
+            
+            # As artist name is unknown, we update the database within process_window()
+    
         # Not found, we complain
         else:
             logging.critical("Unknown URL -> " + url)
@@ -1079,25 +1143,46 @@ class KMP:
         # Keeps a list of download tasks Queues, each entry is a Queue!
         queue_list:list = []
         
-        # Get url to download ######################
-        # List type url
-        if isinstance(url, list):
-            for line in url:
-                line = line.strip()
-                if len(line) > 0:
-                    logging.info("Fetching {url}".format(url=line))
-                    queue_list.append(self.__call_and_interpret_url(line, get_list=True))
-
-        # User input url
+        
+        if self.__update:
+            # Get all artists and their destinations from database
+            rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+            
+            # Compile a list of urls, their download path, and latest url
+            url = [row[0] for row in rows]
+            latest = [row[2] for row in rows]
+            path = [row[3] for row in rows]
+            
+            
+            # Add all new urls to the queue list
+            scrape_pool = ThreadPool(self.__tcount)
+            scrape_pool.start_threads()
+            for i in range(0, len(url)):
+                queue_list.append(self.__process_window(url[i], True, True, scrape_pool, latest[i], path[i]))
+            
+            scrape_pool.join_queue()
+            scrape_pool.kill_threads()
+            
         else:
-            while not url or "https://kemono.party" not in url:
-                url = input("Input a url, or type 'quit' to exit> ")
+            # Get url to download ######################
+            # List type url
+            if isinstance(url, list):
+                for line in url:
+                    line = line.strip()
+                    if len(line) > 0:
+                        logging.info("Fetching {url}".format(url=line))
+                        queue_list.append(self.__call_and_interpret_url(line, get_list=True))
 
-                if(url == 'quit'):
-                    self.__kill_threads(self.__threads)
-                    return
-            logging.info("Fetching, {url}".format(url=url))
-            queue_list.append(self.__call_and_interpret_url(url, get_list=True))
+            # User input url
+            else:
+                while not url or "https://kemono.party" not in url:
+                    url = input("Input a url, or type 'quit' to exit> ")
+
+                    if(url == 'quit'):
+                        self.__kill_threads(self.__threads)
+                        return
+                logging.info("Fetching, {url}".format(url=url))
+                queue_list.append(self.__call_and_interpret_url(url, get_list=True))
         
         
         # Process the task_list
@@ -1161,29 +1246,48 @@ class KMP:
         else:
             self.__unpacked = unpacked
 
-
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
-
-        # Get url to download ######################
-        # List type url
-        if isinstance(url, list):
-            for line in url:
-                line = line.strip()
-                if len(line) > 0:
-                    self.__call_and_interpret_url(line)
-
-        # User input url
-        else:
-            while not url or "https://kemono.party" not in url:
-                url = input("Input a url, or type 'quit' to exit> ")
-
-                if(url == 'quit'):
-                    self.__kill_threads(self.__threads)
-                    return
-
-            self.__call_and_interpret_url(url)
         
+        if self.__update:
+            # Get all artists and their destinations from database
+            rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+            
+            # Compile a list of urls, their download path, and latest url
+            url = [row[0] for row in rows]
+            latest = [row[2] for row in rows]
+            path = [row[3] for row in rows]
+            
+            
+            # Add all new urls to the queue list
+            scrape_pool = ThreadPool(self.__tcount)
+            scrape_pool.start_threads()
+            for i in range(0, len(url)):
+                self.__process_window(url[i], True, False, scrape_pool, latest[i], path[i])
+            
+            scrape_pool.join_queue()
+            scrape_pool.kill_threads()
+        else:    
+            
+            # Get url to download ######################
+            # List type url
+            if isinstance(url, list):
+                for line in url:
+                    line = line.strip()
+                    if len(line) > 0:
+                        self.__call_and_interpret_url(line)
+
+            # User input url
+            else:
+                while not url or "https://kemono.party" not in url:
+                    url = input("Input a url, or type 'quit' to exit> ")
+
+                    if(url == 'quit'):
+                        self.__kill_threads(self.__threads)
+                        return
+
+                self.__call_and_interpret_url(url)
+            
         # Wait for queue
         self.__threads.join_queue()
 
@@ -1207,8 +1311,9 @@ def help() -> None:
         -f <textfile.txt> : Bulk download from text file containing links\n\
         -d <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
         -c <#> : Adjust download chunk size in bytes (Default is 64M)\n\
-        -t <#> : Change download thread count (default is 6)\n")
-        
+        -t <#> : Change download thread count (default is 1, max is 3)\n\
+        -w <#> : Delay between downloads in seconds (default is 0.25s)\n\
+        -b : Track artists which can updated later\n")
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
         -x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
@@ -1220,6 +1325,9 @@ def help() -> None:
         -u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
         -e : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord\n\
         -v : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
+    
+    logging.info("UTILITIES - Things that can be done besides downloading\n\
+        --UPDATE : Update all tracked artist works\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
@@ -1241,6 +1349,7 @@ def main() -> None:
     urls = False
     unzip = False
     tcount = -1
+    wait = -1
     chunksz = -1
     unpacked = False
     excluded:list = []
@@ -1252,6 +1361,10 @@ def main() -> None:
     link_excluded = []
     experimental = False
     benchmark = False
+    db_name = 'KMP.db'
+    update = False
+    track = False
+    
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -1267,6 +1380,14 @@ def main() -> None:
                 experimental = True
                 pointer += 1
                 logging.info("EXPERIMENTAL -> " + str(experimental))
+            elif sys.argv[pointer] == '-b':
+                track = True
+                pointer += 1
+                logging.info("TRACK -> " + str(track))
+            elif sys.argv[pointer] == '--UPDATE':
+                update = True
+                pointer += 1
+                logging.info("UPDATE -> " + str(update))
             elif sys.argv[pointer] == '-e':
                 server_name = True
                 pointer += 1
@@ -1297,6 +1418,10 @@ def main() -> None:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
+            elif sys.argv[pointer] == '-w' and len(sys.argv) >= pointer:
+                wait = float(sys.argv[pointer + 1])
+                pointer += 2
+                logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
             elif sys.argv[pointer] == '-c' and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
@@ -1343,8 +1468,8 @@ def main() -> None:
         os.makedirs(LOG_PATH)
 
     # Run the downloader
-    if folder:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded)
+    if folder or update:
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update)
         
         if experimental or benchmark:
             if unpacked:
