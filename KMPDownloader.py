@@ -38,6 +38,10 @@ Using multithreading
 -- Updater saves download path for artist directories, all updates are saved to that specific folder, not the download folder path
 -- Only a single directory for a specific artists is tracked, an existing entry is overriden if an artist works is downloaded again.
 -- Switch for tracking artists and for updating 
+-- Changes beside initial db creation to the db are not updated until programs ends successfully
+- Confirmed compatibility with Boosty*
+- Added secondary switches for each switch
+
 - TODO Separate HTTPS component from KMP class
 @author Jeff Chen
 @version 0.5.5
@@ -1308,31 +1312,31 @@ def help() -> None:
     Displays help information on invocating this program
     """    
     logging.info("DOWNLOAD CONFIG - How files are downloaded\n\
-        -f <textfile.txt> : Bulk download from text file containing links\n\
-        -d <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
-        -c <#> : Adjust download chunk size in bytes (Default is 64M)\n\
-        -t <#> : Change download thread count (default is 1, max is 3)\n\
-        -w <#> : Delay between downloads in seconds (default is 0.25s)\n\
-        -b : Track artists which can updated later\n")
+        -f --bulkfile <textfile.txt> : Bulk download from text file containing links\n\
+        -d --downloadpath <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
+        -c --chunksz <#> : Adjust download chunk size in bytes (Default is 64M)\n\
+        -t --threadct <#> : Change download thread count (default is 1, max is 3)\n\
+        -w --wait <#> : Delay between downloads in seconds (default is 0.25s)\n\
+        -b --track : Track artists which can updated later\n")
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
-        -x \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
-        -p \"keyword1, keyword2,...\" : Keyword in excluded posts, not case sensitive\n\
-        -l \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n")
+        -x --excludefile \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
+        -p --excludepost \"keyword1, keyword2,...\" : Keyword in excluded posts, not case sensitive\n\
+        -l --excludelink \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n")
     
     logging.info("DOWNLOAD FILE STRUCTURE - How to organize downloads\n\
-        -s : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files\n\
-        -u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
-        -e : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord\n\
-        -v : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
+        -s --partialunpack : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files\n\
+        -u --unpacked : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
+        -e --hashname : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord\n\
+        -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
         --UPDATE : Update all tracked artist works\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
-        -z \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
-        -r <#> : Maximum number of HTTP code retries, default is infinite\n\
-        -h : Help\n\
+        -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
+        -r --maxretries <#> : Maximum number of HTTP code retries, default is infinite\n\
+        -h --help : Help\n\
         --EXPERIMENTAL : Enable experimental mode\n\
         --BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything\n")
 
@@ -1368,11 +1372,11 @@ def main() -> None:
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
-            if sys.argv[pointer] == '-f' and len(sys.argv) >= pointer:
+            if sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile' and len(sys.argv) >= pointer:
                 with open(sys.argv[pointer + 1], "r") as fd:
                     urls = fd.readlines()
                 pointer += 2
-            elif sys.argv[pointer] == '-v':
+            elif sys.argv[pointer] == '-v' or sys.argv[pointer] == '--unzip':
                 unzip = True
                 pointer += 1
                 logging.info("UNZIP -> " + str(unzip))
@@ -1380,7 +1384,7 @@ def main() -> None:
                 experimental = True
                 pointer += 1
                 logging.info("EXPERIMENTAL -> " + str(experimental))
-            elif sys.argv[pointer] == '-b':
+            elif sys.argv[pointer] == '-b' or sys.argv[pointer] == '--track':
                 track = True
                 pointer += 1
                 logging.info("TRACK -> " + str(track))
@@ -1388,11 +1392,11 @@ def main() -> None:
                 update = True
                 pointer += 1
                 logging.info("UPDATE -> " + str(update))
-            elif sys.argv[pointer] == '-e':
+            elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
                 server_name = True
                 pointer += 1
                 logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))                
-            elif sys.argv[pointer] == '-u':
+            elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
                 unpacked = True
                 partial_unpack = False
                 pointer += 1
@@ -1401,7 +1405,7 @@ def main() -> None:
                 benchmark = True
                 pointer += 1
                 logging.info("BENCHMARK -> TRUE")
-            elif sys.argv[pointer] == '-d' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath' and len(sys.argv) >= pointer:
                 folder = os.path.abspath(sys.argv[pointer + 1])
 
                 if folder[len(folder) - 1] == '\"':
@@ -1414,48 +1418,48 @@ def main() -> None:
                     logging.critical("FOLDER Path does not exist, terminating program!!!")
                     return
                 pointer += 2
-            elif sys.argv[pointer] == '-t' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct' and len(sys.argv) >= pointer:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
-            elif sys.argv[pointer] == '-w' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait' and len(sys.argv) >= pointer:
                 wait = float(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
-            elif sys.argv[pointer] == '-c' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chuncksz' and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("CHUNKSZ -> " + str(chunksz))
-            elif sys.argv[pointer] == '-r' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries' and len(sys.argv) >= pointer:
                 retries = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("RETRIES -> " + str(retries))
-            elif sys.argv[pointer] == '-x' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile' and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
                     excluded.append(ext.strip().lower())
                 pointer += 2
-                logging.info("EXCLUDED -> " + str(excluded))
-            elif sys.argv[pointer] == '-l' and len(sys.argv) >= pointer:
+                logging.info("EXT_EXCLUDED -> " + str(excluded))
+            elif sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink' and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
                     link_excluded.append(ext.strip().lower())
                 pointer += 2
                 logging.info("LINK_EXCLUDED -> " + str(link_excluded))
-            elif sys.argv[pointer] == '-p' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost' and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
                     post_excluded.append(ext.strip().lower())
                 pointer += 2
-                logging.info("EXCLUDED POST KEYWORDS -> " + str(post_excluded))
+                logging.info("POST_EXCLUDED -> " + str(post_excluded))
             
-            elif sys.argv[pointer] == '-z' and len(sys.argv) >= pointer:
+            elif sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode' and len(sys.argv) >= pointer:
                 
                 for ext in sys.argv[pointer + 1].split(','):
                     http_codes.append(int(ext.strip()))
                 pointer += 2
                 logging.info("HTTP CODES -> " + str(http_codes))
-            elif sys.argv[pointer] == '-s':
+            elif sys.argv[pointer] == '-s' or sys.argv[pointer] == '--partialunpack':
                 if not unpacked:
                     partial_unpack = True
                     logging.info("PARTIAL_UNPACK -> TRUE")
