@@ -44,7 +44,7 @@ Using multithreading
 - Add various omittion switches
 
 @author Jeff Chen
-@version 0.6
+@version 0.6.0
 @last modified 1/28/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
