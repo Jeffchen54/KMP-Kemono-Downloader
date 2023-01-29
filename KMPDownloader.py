@@ -43,7 +43,6 @@ Using multithreading
 - Added secondary switches for each switch
 - Add various omittion switches
 
-- TODO Separate HTTPS component from KMP class
 @author Jeff Chen
 @version 0.6
 @last modified 1/28/2023
