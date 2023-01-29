@@ -1060,8 +1060,8 @@ class KMP:
             task_list = self.__process_discord(url, self.__folder + url.rpartition('/')[2] + "\\", get_list=get_list)
 
             # Add entry to database
-            if self.__db:
-                self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?)", (url, self.__folder + url.rpartition('/')[2] + "\\")))
+            #if self.__db:
+            #    self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?)", (url, self.__folder + url.rpartition('/')[2] + "\\")))
 
         # For multiple window pages
         elif 'user' in url:
@@ -1330,7 +1330,7 @@ def help() -> None:
         -c --chunksz <#> : Adjust download chunk size in bytes (Default is 64M)\n\
         -t --threadct <#> : Change download thread count (default is 1, max is 3)\n\
         -w --wait <#> : Delay between downloads in seconds (default is 0.25s)\n\
-        -b --track : Track artists which can updated later\n")
+        -b --track : Track artists which can updated later, not supported for discord\n")
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
         -x --excludefile \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
