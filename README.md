@@ -5,9 +5,6 @@ Ran and built in Windows 10 with Visual Studios on Python 3.10
 Functionality not guaranteed until 1.0, There are known bugs!
 Can download everything from Files, save text and links in Content, and everything in Downloads. Can be set to automatically unzip files if they contain no password.
 
-*For version 0.4 and onward, downloaded files names will be different. Files from 0.3.5 and prior will be considered different files
-and will not be skipped on duplication checks.
-
 ![Screenshot 2022-05-17 114434 PNG](https://user-images.githubusercontent.com/78765964/168853513-b5b14b98-430f-4437-b63b-08ea93ddf014.jpg)
 
 ## Current Features
@@ -20,8 +17,11 @@ View changelog for more details on features not included here.
 - Queuing system, download multiple URLs without user input
 - Multhreading support, significant download speed bonus.
 - Ease of use, cookies are for eating only!  
+- Automatically artist work updates**.
 
 *Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
+
+**New feature which is still in development
 
 ## Instructions:
 **Need in depth details? Go to the latest release and read the powerpoint there!**
@@ -53,45 +53,57 @@ file unzipping or are not going to unzip password protected zip files.
 ## Command line arguments:
 DOWNLOAD CONFIG - How files are downloaded
 
--f <textfile.txt> : Bulk download from text file containing links
-
--d <path> : REQUIRED - Set download path for single instance, must use '\'
-
--c <#> : Adjust download chunk size in bytes (Default is 64M)
-
--t <#> : Change download thread count (default is 6)
+        -f --bulkfile <textfile.txt> : Bulk download from text file containing links
+        
+        -d --downloadpath <path> : REQUIRED - Set download path for single instance, must use '\' or '/'
+        
+        -c --chunksz <#> : Adjust download chunk size in bytes (Default is 64M)
+        
+        -t --threadct <#> : Change download thread count (default is 1, max is 3)
+        
+        -w --wait <#> : Delay between downloads in seconds (default is 0.25s)
+        
+        -b --track : Track artists which can updated later, not supported for discord.
 
 EXCLUSION - Exclusion of specific downloads
 
--x "txt, zip, ..., png" : Exclude files with listed extensions, NO '.'s
-
--p "keyword1, keyword2,..." : Keyword in excluded posts, not case sensitive
-
--l "keyword1, keyword2,..." : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target
+        -x --excludefile "txt, zip, ..., png" : Exclude files with listed extensions, NO '.'s
+        
+        -p --excludepost "keyword1, keyword2,..." : Keyword in excluded posts, not case sensitive
+        
+        -l --excludelink "keyword1, keyword2,..." : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target
+        
+        -o --omitcomment : Do not download any post comments
+        
+        -m --omitcontent : Do not download any textual post contents
+        
+        -n --minsize : Minimum file size in bytes
 
 DOWNLOAD FILE STRUCTURE - How to organize downloads
 
--s : If a artist work is text only, do not create a dedicated directory for it, partially unpacks files
+        -s --partialunpack : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files
+        
+        -u --unpacked : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack
+        
+        -e --hashname : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord
+        
+        -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly
 
--u : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack
+UTILITIES - Things that can be done besides downloading
 
--e : Download server name instead of program defined naming scheme
-
--v : Enables unzipping of files automatically
+        --UPDATE : Update all tracked artist works
 
 TROUBLESHOOTING - Solutions to possible issues
 
--z "500, 502,..." : HTTP codes to retry downloads on, default is 429 and 403
-
--r <#> : Maximum number of HTTP code retries, default is infinite
-
--h : Help
-
---EXPERIMENTAL : Enable experimental mode
-
---BENCHMARK : Benchmark URL scraping, does not download files
-
- Default file organization is packed, all works will have their own folder within an artist folder.
+        -z --httpcode "500, 502,..." : HTTP codes to retry downloads on, default is 429 and 403
+        
+        -r --maxretries <#> : Maximum number of HTTP code retries, default is infinite
+        
+        -h --help : Help
+        
+        --EXPERIMENTAL : Enable experimental mode
+        
+        --BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything
     
 ## Bulk file
   An example bulk file has been included "examples.txt"
@@ -168,14 +180,17 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
  ### Specific Discord Issues:
 - Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
     
-    
-## Known bugs:
-- post_content.txt may contain garbage data at times
+## Changelog 0.6
+- Adjusted thread count to a more reasonable amount.
+- Default thread count now is 1 thread, default settings are meant to succeed most of the time.
+- Updated user agent.
+- Added time between downloads.
+- Added beta updater sqllite3 module.
+- Confirmed compatibility with Boosty (more testing needed for complete compatibility)
+- Added secondary switches for each switch
+- Added various omittion switches (omitcomments, omitposttextcontent, minattachmentsize)
+- Removed some unused files.
 
-## Possible bugs:
-These bugs were accounted for but not enough testing has been conducted
-  
-None
 ## Changelog 0.5.6
 - Support added for website redesign
 
@@ -323,16 +338,7 @@ overwritting existing files
 - Works with mp4s 
 - Support downloading all sections from artist home page
 
-## Future features:
-- User friendly upgrades
-- GUI
-- Command line argument support for more settings
-- Automatic Gdrive and Mega download from links (Unlikely)
-
 ## CONFIRMED COMING SOON!
-- Advanced duplicate file database. All downloaded files src recorded and matched against
-in future downloads
-- various omittion switches (post content, comments, images, attachments)
 - record extraction error to log
 - logging switch
-- Advanced dupe file check with a database
+- Advanced dupe file check through hashing
