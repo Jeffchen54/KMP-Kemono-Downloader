@@ -41,10 +41,11 @@ Using multithreading
 -- Changes beside initial db creation to the db are not updated until programs ends successfully
 - Confirmed compatibility with Boosty*
 - Added secondary switches for each switch
+- Add various omittion switches
 
 - TODO Separate HTTPS component from KMP class
 @author Jeff Chen
-@version 0.5.5
+@version 0.6
 @last modified 1/28/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
@@ -104,10 +105,13 @@ class KMP:
     __wait:float                        # Wait time between downloads in seconds
     __db:DB                             # Name of database
     __update:bool                       # True for update mode, false for download mode
+    __exclcomments:bool                 # Exclude comments switch
+    __exclcontents:bool                 # Exclude contents switch
+    __minsize:bool                      # Minimum downloadable file size
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False) -> None:
+        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -149,6 +153,12 @@ class KMP:
         self.__register_mutex = Lock()
         self.__db = DB(db_name)
         self.__update = update
+        self.__exclcomments = exclcomments
+        self.__exclcontents = exclcontents
+        if minsize < 0:
+            self.__minsize = 0
+        else:
+            self.__minsize = minsize
         
         if not http_codes or len(http_codes) == 0:
             self.__http_codes = [429, 403]
@@ -295,9 +305,8 @@ class KMP:
             self.__failed_mutex.acquire()
             self.__failed += 1
             self.__failed_mutex.release()
-        
-        # Download and skip duplicate file
-        elif (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
+        # Download and skip duplicate file and files that are too small
+        elif int(fullsize) > self.__minsize and (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
             headers = HEADERS
             mode = 'wb'
             done = False
@@ -644,22 +653,24 @@ class KMP:
         # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")
 
-        if content:
-            if(os.path.exists(titleDir + work_name + "post__content.txt")):
-                logging.debug("Skipping duplicate post_content download")
-            else:
-                text = content.getText(separator='\n', strip=True)
-                if len(text) > 0:
-                    # Text section
-                    with open(titleDir + work_name + "post__content.txt", "w", encoding="utf-8") as fd:
-                        fd.write(text)
-                        links = content.find_all("a")
-                        for link in links:
-                            hr = link.get('href')
-                            if not hr:
-                                logging.info("Href returns None at url: {u}".format(u=url))
-                            else:
-                                fd.write("\n" + hr)
+        # Skip post content is switch is on
+        if not self.__exclcontents:
+            if content:
+                if(os.path.exists(titleDir + work_name + "post__content.txt")):
+                    logging.debug("Skipping duplicate post_content download")
+                else:
+                    text = content.getText(separator='\n', strip=True)
+                    if len(text) > 0:
+                        # Text section
+                        with open(titleDir + work_name + "post__content.txt", "w", encoding="utf-8") as fd:
+                            fd.write(text)
+                            links = content.find_all("a")
+                            for link in links:
+                                hr = link.get('href')
+                                if not hr:
+                                    logging.info("Href returns None at url: {u}".format(u=url))
+                                else:
+                                    fd.write("\n" + hr)
                 
             # Image Section
             task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
@@ -697,15 +708,17 @@ class KMP:
         
 
         # Download post comments ################################################
-        if(os.path.exists(titleDir + work_name + "post__comments.txt")):
-                logging.debug("Skipping duplicate post comments")
-        elif "patreon" in url or "fanbox" in url:
-            comments = soup.find("div", class_="post__comments")
-            if comments and len(comments.getText(strip=True)) > 0:
-                text = comments.getText(separator='\n', strip=True)
-                if(text and text != "No comments found for this post." and len(text) > 0):
-                    jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + work_name + "post__comments.txt", 'w')
-        
+        # Skip if omit comment switch is on
+        if not self.__exclcomments:
+            if(os.path.exists(titleDir + work_name + "post__comments.txt")):
+                    logging.debug("Skipping duplicate post comments")
+            elif "patreon" in url or "fanbox" in url:
+                comments = soup.find("div", class_="post__comments")
+                if comments and len(comments.getText(strip=True)) > 0:
+                    text = comments.getText(separator='\n', strip=True)
+                    if(text and text != "No comments found for this post." and len(text) > 0):
+                        jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + work_name + "post__comments.txt", 'w')
+            
         # Add to post process queue if partial unpack is on
         if self.__unpacked == 1:
             self.__post_process.append((self.__partial_unpack_post_process, (titleDir, root + backup)))
@@ -1322,7 +1335,10 @@ def help() -> None:
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
         -x --excludefile \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
         -p --excludepost \"keyword1, keyword2,...\" : Keyword in excluded posts, not case sensitive\n\
-        -l --excludelink \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n")
+        -l --excludelink \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n\
+        -o --omitcomment : Do not download any post comments\n\
+        -m --omitcontent : Do not download any textual post contents\n\
+        -n --minsize : Minimum file size in bytes\n")
     
     logging.info("DOWNLOAD FILE STRUCTURE - How to organize downloads\n\
         -s --partialunpack : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files\n\
@@ -1368,11 +1384,14 @@ def main() -> None:
     db_name = 'KMP.db'
     update = False
     track = False
+    exclcomments = False
+    exclcontents = False
+    minsize = 0
     
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
-            if sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile' and len(sys.argv) >= pointer:
+            if (sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile') and len(sys.argv) >= pointer:
                 with open(sys.argv[pointer + 1], "r") as fd:
                     urls = fd.readlines()
                 pointer += 2
@@ -1388,6 +1407,18 @@ def main() -> None:
                 track = True
                 pointer += 1
                 logging.info("TRACK -> " + str(track))
+            elif sys.argv[pointer] == '-o' or sys.argv[pointer] == '--omitcomment':
+                exclcomments = True
+                pointer += 1
+                logging.info("OMITCOMMENTS -> " + str(exclcomments))
+            elif sys.argv[pointer] == '-m' or sys.argv[pointer] == '--omitcontent':
+                exclcontents = True
+                pointer += 1 
+                logging.info("OMITPOSTCONTENT -> " + str(exclcontents))
+            elif (sys.argv[pointer] == '-n' or sys.argv[pointer] == '--minsize') and len(sys.argv) >= pointer:
+                minsize = int(sys.argv[pointer + 1])
+                pointer += 2
+                logging.info("MINFILESIZE -> " + str(minsize))
             elif sys.argv[pointer] == '--UPDATE':
                 update = True
                 pointer += 1
@@ -1400,12 +1431,12 @@ def main() -> None:
                 unpacked = True
                 partial_unpack = False
                 pointer += 1
-                logging.info("UNPACKED -> TRUE")
+                logging.info("UNPACKED -> " + str(unpacked))
             elif sys.argv[pointer] == '--BENCHMARK':
                 benchmark = True
                 pointer += 1
                 logging.info("BENCHMARK -> TRUE")
-            elif sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath') and len(sys.argv) >= pointer:
                 folder = os.path.abspath(sys.argv[pointer + 1])
 
                 if folder[len(folder) - 1] == '\"':
@@ -1418,42 +1449,42 @@ def main() -> None:
                     logging.critical("FOLDER Path does not exist, terminating program!!!")
                     return
                 pointer += 2
-            elif sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct') and len(sys.argv) >= pointer:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
-            elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait') and len(sys.argv) >= pointer:
                 wait = float(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
-            elif sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chuncksz' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chunksz') and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("CHUNKSZ -> " + str(chunksz))
-            elif sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries') and len(sys.argv) >= pointer:
                 retries = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("RETRIES -> " + str(retries))
-            elif sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile') and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
                     excluded.append(ext.strip().lower())
                 pointer += 2
                 logging.info("EXT_EXCLUDED -> " + str(excluded))
-            elif sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink') and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
                     link_excluded.append(ext.strip().lower())
                 pointer += 2
                 logging.info("LINK_EXCLUDED -> " + str(link_excluded))
-            elif sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost') and len(sys.argv) >= pointer:
                  
                 for ext in sys.argv[pointer + 1].split(','):
                     post_excluded.append(ext.strip().lower())
                 pointer += 2
                 logging.info("POST_EXCLUDED -> " + str(post_excluded))
             
-            elif sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode' and len(sys.argv) >= pointer:
+            elif (sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode') and len(sys.argv) >= pointer:
                 
                 for ext in sys.argv[pointer + 1].split(','):
                     http_codes.append(int(ext.strip()))
@@ -1462,7 +1493,7 @@ def main() -> None:
             elif sys.argv[pointer] == '-s' or sys.argv[pointer] == '--partialunpack':
                 if not unpacked:
                     partial_unpack = True
-                    logging.info("PARTIAL_UNPACK -> TRUE")
+                    logging.info("PARTIAL_UNPACK -> " + str(partial_unpack))
                     pointer += 1
             else:
                 pointer = len(sys.argv)
@@ -1473,7 +1504,9 @@ def main() -> None:
 
     # Run the downloader
     if folder or update:
-        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded, download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update)
+        downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
+            download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
+                exclcontents=exclcontents, minsize=minsize)
         
         if experimental or benchmark:
             if unpacked:
