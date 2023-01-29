@@ -1,7 +1,7 @@
 # KMPDownloader
 Simple Kemono.party downloader
 
-Ran and built in Windows 10 with Visual Studios on Python 3.10
+Ran and built in Windows 10 with Visual Studios on Python 3.10 and 3.11
 Functionality not guaranteed until 1.0, There are known bugs!
 Can download everything from Files, save text and links in Content, and everything in Downloads. Can be set to automatically unzip files if they contain no password.
 
@@ -25,6 +25,8 @@ View changelog for more details on features not included here.
 
 ## Instructions:
 **Need in depth details? Go to the latest release and read the powerpoint there!**
+
+Download Python >=3.10
 
 - Download all required dependencies
 
