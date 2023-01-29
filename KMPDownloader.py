@@ -671,8 +671,8 @@ class KMP:
                                 else:
                                     fd.write("\n" + hr)
                 
-            # Image Section
-            task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
+                # Image Section
+                task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
 
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
