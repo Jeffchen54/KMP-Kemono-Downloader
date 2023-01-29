@@ -86,6 +86,7 @@ DOWNLOAD FILE STRUCTURE - How to organize downloads
         -u --unpacked : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack
         
         -e --hashname : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord
+        
         -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly
 
 UTILITIES - Things that can be done besides downloading
