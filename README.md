@@ -181,7 +181,7 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
  
  ## Bugs
  1. Download halts on certain posts due to dead links in their post content.
- 2. --omitcontent switch omits everything in post content when supposed to only omit text. Can circumnavigate the issues in (1). 
+ 2. --omitcontent switch omits everything in post content when supposed to only omit text. Can circumnavigate the issues in (1) with the current buggy functionality. 
  3. Backslash at the end of file paths will cause that path to be registered as invalid.
  4. 502 errors are used to rate limit, can be added to http codes to retry on through a switch but should be retried by default.
  
