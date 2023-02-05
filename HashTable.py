@@ -244,6 +244,9 @@ class HashTable:
             searchKey: key of KVPair to search for 
         Return: position if found, -1 if does not exists
         """
+        if searchKey == None:
+            return -1
+        
         home = self.hash(str(searchKey), self.__size)
         curr = home
 

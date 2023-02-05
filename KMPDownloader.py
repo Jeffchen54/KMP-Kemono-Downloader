@@ -12,6 +12,7 @@ from tqdm import tqdm
 import logging
 import requests.adapters
 from datetime import datetime, timezone
+from ssl import SSLError
 
 
 from Threadpool import tname
@@ -25,26 +26,20 @@ import alive_progress
 from PersistentCounter import PersistentCounter
 import jutils
 from DB import DB
+from traceback import print_exc
+from inspect import currentframe, getframeinfo
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Adjusted thread count to a more reasonable amount
-- Default thread count now is 1 thread
-- Updated user agent
-- Added time between downloads.
-- Added updater sqllite3 module
--- Saves all artist directories and their most recently uploaded work that was downloaded
--- Updater saves download path for artist directories, all updates are saved to that specific folder, not the download folder path
--- Only a single directory for a specific artists is tracked, an existing entry is overriden if an artist works is downloaded again.
--- Switch for tracking artists and for updating 
--- Changes beside initial db creation to the db are not updated until programs ends successfully
-- Confirmed compatibility with Boosty*
-- Added secondary switches for each switch
-- Add various omittion switches
+- Improved error handling
+- HTTP retries no longer infinite by default
+- Post content with embedded containerlized elements like embedded GDrive files links are saved to file
+- Duplicate files with now have space in between filename and () to conform to windows standards
+- Signficantly improved duplicate file search algorithm for local files
 
 @author Jeff Chen
-@version 0.6.0
+@version 0.6.1
 @last modified 1/28/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
@@ -107,9 +102,11 @@ class KMP:
     __exclcomments:bool                 # Exclude comments switch
     __exclcontents:bool                 # Exclude contents switch
     __minsize:bool                      # Minimum downloadable file size
+    __existing_file_register:HashTable  # Existing files and their size
+    __existing_file_register_lock:Lock  # Lock for existing file table
     
 
-    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = -1, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
+    def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0) -> None:
         """
         Initializes all variables. Does not run the program
@@ -138,7 +135,7 @@ class KMP:
         self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
         self.__progress = Semaphore(value=0)
-        self.__register = HashTable(1000)
+        self.__register = HashTable(1000000)
         self.__fcount = 0
         self.__unzip = unzip
         self.__fcount_mutex = Lock()
@@ -167,7 +164,7 @@ class KMP:
         if not tcount or tcount <= 0:
             self.__tcount = 1
         else:
-            self.__tcount = min(3, tcount)
+            self.__tcount = min(6 , tcount)
             
         if wait < 0:
             self.__wait = 0.25
@@ -205,6 +202,91 @@ class KMP:
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
         
+        # TODO choose better number
+        self.__existing_file_register = HashTable(1000000)
+        self.__existing_file_register_lock = Lock()
+        self.__fregister_preload(folder, self.__existing_file_register)
+        #self.__existing_file_register.hashtable_print()
+        
+        
+    
+        
+    def __fregister_preload(self, dir:str, fregister:HashTable) -> None:
+        """
+        Adds all files and their size to a hashtable
+
+        Args:
+            path (str): Directory path to walk
+            register (HashTable): If provided, appends to the hashtable
+        Pre: path ends with '/' and uses '/'
+        Returns:
+            HashTable: Hashtable with all file records if register is None
+        """
+
+        # Pull up current directory information
+        contents = os.scandir(dir)
+        
+        # Iterate through all elements
+        for file in contents:
+            
+            # If is a directory, recursive call into directory and append result
+            if file.is_dir():
+                self.__fregister_preload_helper(file.path + '\\', fregister)
+          
+
+            # TODO sort values by radix sort and implement binary search
+    
+    def __fregister_preload_helper(self, dir:str, fregister:HashTable) -> None:
+        """
+        Adds all files and their size to a hashtable
+
+        Args:
+            path (str): Directory path to walk
+            register (HashTable): If provided, appends to the hashtable
+        Pre: path ends with '/' and uses '/'
+        Returns:
+            HashTable: Hashtable with all file records if register is None
+        """
+
+        # Pull up current directory information
+        contents = os.scandir(dir)
+        
+        # Iterate through all elements
+        for file in contents:
+            
+            # If is a directory, recursive call into directory and append result
+            if file.is_dir():
+                self.__fregister_preload_helper(file.path + '\\', fregister)
+            # If not directory, get file size and remove any ()
+            elif file.stat().st_size > 0:
+                # Get file size
+                fsize = os.stat(file.path).st_size
+                
+                # Remove (...) if it exists
+                # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
+                if ' (' in file.name:
+                    ext = file.name.rpartition('.')[2]
+                    basename = file.name.partition(" (")[0]
+                    fullpath = dir + basename + "." + ext
+                elif '(' in file.name:
+                    ext = file.name.rpartition('.')[2]
+                    basename = file.name.partition("(")[0]
+                    fullpath = dir + basename + "." + ext
+                else:
+                    fullpath = file.path 
+                    
+                # Add size value to register
+                data = fregister.hashtable_lookup_value(fullpath)
+                # If entry does not exists, add it               
+                if not data:
+                    fregister.hashtable_add(KVPair(fullpath, [fsize]))
+                # Else append data to currently existing entry
+                else:
+                    data.append(fsize)
+                    fregister.hashtable_edit_value(fullpath, data)
+
+            # TODO sort values by radix sort and implement binary search
+        
     def reset(self) -> None:
         """
         Resets register and download count, should be called if the KMP
@@ -232,7 +314,7 @@ class KMP:
         Downloads file at src. Skips if 
             (1) a file already exists sharing the same fname and size 
             (2) Contains blacklisted extensions
-            (3) Has been downloaded already with this KMP instance
+            (3) File's name and size matches a locally downloaded file
         Param:
             src: src of image to download
             fname: what to name the file to download, with extensions. Absolute path
@@ -242,6 +324,7 @@ class KMP:
             generated session that is closed before function terminates
         """
         close = False
+        
         # Configure tname and session #######################################################################################################
         if not tname.name:
             tname.name = "default thread name" 
@@ -255,12 +338,12 @@ class KMP:
         logging.debug("Downloading " + fname + " from " + src)
         r = None
         timeout = 0
+        notifcation = 0
         
         # Grabbing content length  ###########################################################################################################
         while not r:
             try:
                 r = session.request('HEAD', src, timeout=5)
-
                 if r.status_code >= 400:
                     if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
@@ -281,7 +364,7 @@ class KMP:
                         
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
-                        jutils.write_to_file(LOG_NAME, "{code} TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+                        jutils.write_to_file(LOG_NAME, "{code} UNREGISTERED TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
                         self.__failed_mutex.acquire()
                         self.__failed += 1
                         self.__failed_mutex.release()
@@ -290,9 +373,14 @@ class KMP:
                             self.__progress.release()
                             self.__progress_mutex.release()
                         return
-
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                logging.debug("Connection request unanswered, retrying -> URL: {url}".format(url=src))
+                notifcation+=1
+                time.sleep(1)
+                
+                if(notifcation % 10 == 0):
+                    logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
+                
+                logging.debug("Connection request unanswered, retrying -> URL: {url}, FNAME: {f}".format(url=src, f=fname))
         fullsize = r.headers.get('Content-Length')
 
         f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
@@ -304,78 +392,150 @@ class KMP:
             self.__failed_mutex.acquire()
             self.__failed += 1
             self.__failed_mutex.release()
-        # Download and skip duplicate file and files that are too small
-        elif int(fullsize) > self.__minsize and (not os.path.exists(fname) or os.stat(fname).st_size != int(fullsize)) and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
-            headers = HEADERS
-            mode = 'wb'
-            done = False
-            downloaded = 0          # Used for updating the bar
-            while(not done):
-                try:
-                    # Get the session
-                    data = None
-                    while not data:
-                        try:
-                            data = session.get(src, stream=True, timeout=5, headers=headers)
-                        except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                             logging.debug("Connection timeout on {url}".format(url=src))
+        else:
+            # Convert fullsize
+            fullsize = int(fullsize)
+            
+            # Check to see if file exists in the file register
+            self.__existing_file_register_lock.acquire()
+            
+            if self.__existing_file_register.hashtable_exist_by_key(fname) == -1:
+                # If does not exists, add an entry
+                self.__existing_file_register.hashtable_add(KVPair(fname, []))
+            
+            # Get file size of local matching file name files
+            values = self.__existing_file_register.hashtable_lookup_value(fname)
+            
+            
+            # Check if file name and size exists already
+            if(fullsize in values):
+                # If file size already exists, skip it
+                logging.debug("{} (fsize={}) matches locally available file.".format(fname, fullsize))
+                self.__existing_file_register_lock.release()
+            # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
+            elif fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
+                headers = HEADERS
+                mode = 'wb'
+                done = False
+                downloaded = 0          # Used for updating the bar
+                failed = False
+                
+                # Make a new file name according to number of matching fname entries
+                if len(values) == 0:
+                    download_fname = fname
+                else:
+                    # Starts at 0 due to backward compatibility with previous dupe naming scheme
+                    ftokens = fname.rpartition('.')
+                    download_fname = ftokens[0] + " (" + str(len(values - 1)) + ")." + ftokens[2]
+                
+                # Add file size to hash table
+                values.append(fullsize)
+                self.__existing_file_register.hashtable_edit_value(download_fname, values)
+                self.__existing_file_register_lock.release()
+                
+                while(not done):
+                    try:
+                        # Get the session
+                        data = None
+                        while not data:
+                            try:
+                                data = session.get(src, stream=True, timeout=5, headers=headers)
+                                
+                                # If 302 error (resourced moved) occurs, get the new src and add it to the threadpool
+                                if(r.status_code == 302):
+                                    newsrc = r.json()['headers']['Location']
+                                    logging.debug("Resource was moved to {} from {}".format(newsrc, src))
+                                    self.__threads.enqueue((self.__download_file, (newsrc, fname, display_bar,)))
+                                    
+                                    if close:
+                                        session.close()
+                                    
+                                    return
+                                        
+                            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                                logging.error("Connection timeout on {url}".format(url=src))
+                                time.sleep(5)
+                                
+                        # Download the file with visual bars 
+                        if display_bar:
                             
-                    # Download the file with visual bars 
-                    if display_bar:
-                        
-                        with open(fname, mode) as fd, tqdm(
-                                desc=fname,
-                                total=int(fullsize) - downloaded,
-                                unit='iB',
-                                unit_scale=True,
-                                leave=False,
-                                bar_format= tname.name + ": (" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
-                                unit_divisor=int(1024)) as bar:
-                            for chunk in data.iter_content(chunk_size=self.__chunksz):
-                                sz = fd.write(chunk)
-                                fd.flush()
-                                bar.update(sz)
-                                downloaded += sz
-                            time.sleep(1)
-                            bar.clear()
-                    else:
-                        with open(fname, 'wb') as fd:
-                            for chunk in data.iter_content(chunk_size=self.__chunksz):
-                                sz = fd.write(chunk)
-                                fd.flush()
-                                downloaded += sz
-                            time.sleep(1)
-
-                    # Checks if the file is correctly downloaded, if so, we are done
-                    if(os.stat(fname).st_size == int(fullsize)):
+                            with open(download_fname, mode) as fd, tqdm(
+                                    desc=download_fname,
+                                    total=fullsize - downloaded,
+                                    unit='iB',
+                                    unit_scale=True,
+                                    leave=False,
+                                    bar_format= tname.name + ": (" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
+                                    unit_divisor=int(1024)) as bar:
+                                for chunk in data.iter_content(chunk_size=self.__chunksz):
+                                    sz = fd.write(chunk)
+                                    fd.flush()
+                                    bar.update(sz)
+                                    downloaded += sz
+                                time.sleep(1)
+                                bar.clear()
+                        else:
+                            with open(download_fname, 'wb') as fd:
+                                
+                                try:
+                                    for chunk in data.iter_content(chunk_size=self.__chunksz):
+                                        sz = fd.write(chunk)
+                                        fd.flush()
+                                        downloaded += sz
+                                except(SSLError):
+                                    logging.error("SSL read error has occured on URL: {}".format(src))
+                                    jutils.write_to_file(LOG_NAME, "SSL read error -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=download_fname), LOG_MUTEX)
+                                    failed = True
+                                except(requests.ConnectionError):
+                                    logging.error("Connection error, retrying")
+                                    time.sleep(5)
+                                except(Exception) as e:
+                                    logging.error("Handled an unknown exception: {}".format(e.__class__.__name__))
+                                    jutils.write_to_file(LOG_NAME, "Unknown Exception {exc} -> SRC: {src}, FNAME: {fname}\n".format(exc=e.__class__.__name__, code=str(r.status_code), src=src, fname=download_fname), LOG_MUTEX)
+                                    failed = True
+                                
+                        # Checks if unrecoverable error as occured
+                        if failed:
+                            done = True
+                            self.__failed_mutex.acquire()
+                            self.__failed += 1
+                            self.__failed_mutex.release()
+                        # Checks if the file is correctly downloaded, if so, we are done
+                        elif(os.stat(download_fname).st_size == fullsize):
+                            done = True
+                            logging.debug("Downloaded Size (" + download_fname + ") -> " + str(fullsize))
+                            # Increment file download count, file is downloaded at this point
+                            self.__fcount_mutex.acquire()
+                            self.__fcount += 1
+                            self.__fcount_mutex.release()
+                            
+                            
+                        else:
+                            logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
+                            headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
+                                    'Range': 'bytes=' + str(downloaded) + '-' + str(fullsize)}
+                            mode = 'ab'
+                    except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
+                        logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
+                        time.sleep(5)
+                    except FileNotFoundError:
+                        logging.debug("Cannot be downloaded, file likely a link, not a file ->" + download_fname)
                         done = True
-                        logging.debug("Downloaded Size (" + fname + ") -> " + fullsize)
-                        # Increment file download count, file is downloaded at this point
-                        self.__fcount_mutex.acquire()
-                        self.__fcount += 1
-                        self.__fcount_mutex.release()
-                    else:
-                        logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + fname)
-                        headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
-                                  'Range': 'bytes=' + str(downloaded) + '-' + fullsize}
-                        mode = 'ab'
-                except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
-                    logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
-                except FileNotFoundError:
-                    logging.debug("Cannot be downloaded, file likely a link, not a file ->" + fname)
-                    done = True
 
 
 
-            # Unzip file if specified
-            if self.__unzip and zipextracter.supported_zip_type(fname):
-                p = fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                          fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
-                self.__dir_lock.acquire()
-                if not os.path.exists(p):
-                    os.mkdir(p)
-                self.__dir_lock.release()
-                zipextracter.extract_zip(fname, p, temp=True)
+                    # Unzip file if specified
+                    if self.__unzip and zipextracter.supported_zip_type(download_fname):
+                        p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                                download_fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
+                        self.__dir_lock.acquire()
+                        if not os.path.exists(p):
+                            os.mkdir(p)
+                        self.__dir_lock.release()
+                        zipextracter.extract_zip(download_fname, p, temp=True)
+            else:
+                self.__existing_file_register_lock.release()
+                    
         
         # Increment progress mutex
         if not display_bar:
@@ -462,10 +622,10 @@ class KMP:
                 src = self.__CONTAINER_PREFIX + href
             # Type 2 image - Image in Content section
             else:
-                
                 target = link.get('src')
                # Polluted link check, Fanbox is notorious for this
-                if "downloads.fanbox" not in target:
+               # Curiously, src can be None as a string
+                if "downloads.fanbox" not in target and target != "None":
                      # Hosted on non KMP server
                     if 'http' in target:
                         src = target
@@ -475,6 +635,7 @@ class KMP:
                 else:
                     src = None
             # If a src is detected, it is added to the download queue/task list    
+            
             if src:
                 logging.debug("Extracted content link: " + src)
                 
@@ -483,18 +644,6 @@ class KMP:
                     fname = dir + base_name + self.__trim_fname(src)
                 else:
                     fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-
-                # Check if the post attachment shares the same name as another post attachemnt
-                # Adjust filename if found
-                self.__register_mutex.acquire()
-                value = self.__register.hashtable_lookup_value(fname)
-                if value != None:  # If register, update titleDir and increment value
-                    self.__register.hashtable_edit_value(fname, value + 1)
-                    split = fname.partition('.')
-                    fname = split[0] + "(" + str(value) + ")." + split[2]
-                else:   # If not registered, add to register at value 1
-                    self.__register.hashtable_add(KVPair[str, int](fname, 1))
-                self.__register_mutex.release()
                     
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname)))
@@ -560,7 +709,6 @@ class KMP:
         Return: task_list after modification
         Raise: DeadThreadPoolException when no download threads are available, ignored if get_list is true
         """
-        
         logging.debug("Processing: " + url + " to be stored in " + root)
         counter = PersistentCounter()     # Counter to name the images as 
         if not self.__threads.get_status():
@@ -584,6 +732,7 @@ class KMP:
                 reqs = self.__session.get(url, timeout=5, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
+                 time.sleep(5)
         soup = BeautifulSoup(reqs.text, 'html.parser')
         while "500 Internal Server Error" in soup.find("title"):
             logging.error("500 Server error encountered at " +
@@ -595,6 +744,7 @@ class KMP:
                     reqs = self.__session.get(url, timeout=5, headers=HEADERS)
                 except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                     logging.debug("Connection timeout")
+                    time.sleep(5)
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
         
@@ -625,7 +775,7 @@ class KMP:
             value = self.__register.hashtable_lookup_value(titleDir)
             if value != None:  # If register, update titleDir and increment value
                 self.__register.hashtable_edit_value(titleDir, value + 1)
-                titleDir = titleDir[:len(titleDir) - 1] + "(" + str(value) + ")\\"
+                titleDir = titleDir[:len(titleDir) - 1] + " (" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
                 self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
             self.__register_mutex.release()
@@ -638,6 +788,7 @@ class KMP:
         # Create directory if not registered
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
+            
         reqs.close()
 
         # Download all 'files' #####################################################
@@ -670,6 +821,20 @@ class KMP:
                                     logging.info("Href returns None at url: {u}".format(u=url))
                                 else:
                                     fd.write("\n" + hr)
+                            
+                            # Nested content
+                            containers = content.find_all("div")
+                            prev = None     # Used to get the entire div, not the internal nested divs
+                            for container in containers:                                
+                                # check if the current container is nested within the previous one
+                                if not prev or prev and container.contents[0] not in prev:
+                                    # if not, write to file
+                                    fd.write("\n" + "Embedded Container: {}".format(container.contents[0]))
+                                
+                                # update prev
+                                prev = container.contents[0]
+                                    
+                                    
                 
                 # Image Section
                 task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
@@ -680,24 +845,12 @@ class KMP:
             for attachment in attachments:
                 download = attachment.get('href')
                 # Confirm that attachment not from patreon 
-                if 'patreon' not in download:
+                if download and 'patreon' not in download:
                     src = self.__CONTAINER_PREFIX + download
                     aname =  self.__trim_fname(attachment.text.strip())
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
                         fname = os.path.join(titleDir, work_name + aname)
-                        
-                        # Check if the post attachment shares the same name as another post attachemnt
-                        # Adjust filename if found
-                        self.__register_mutex.acquire()
-                        value = self.__register.hashtable_lookup_value(fname)
-                        if value != None:  # If register, update titleDir and increment value
-                            self.__register.hashtable_edit_value(fname, value + 1)
-                            split = fname.partition('.')
-                            fname = split[0] + "(" + str(value) + ")." + split[2]
-                        else:   # If not registered, add to register at value 1
-                            self.__register.hashtable_add(KVPair[str, int](fname, 1))
-                        self.__register_mutex.release()
                         
                         if task_list:
                             task_list.put((self.__download_file, (src, fname, False)))
@@ -793,6 +946,7 @@ class KMP:
                 reqs = self.__session.get(url, timeout=5, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
+                 time.sleep(5)
         soup = BeautifulSoup(reqs.text, 'html.parser')
         reqs.close()
         # Create directory
@@ -801,7 +955,7 @@ class KMP:
                                           artist.get('content')) + "\\"
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
-
+        
         contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
         suffix = "?o="
         counter = 0
@@ -839,6 +993,7 @@ class KMP:
                         reqs = self.__session.get(url + suffix + str(counter), timeout=5, headers=HEADERS)
                     except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                          logging.debug("Connection timeout")
+                         time.sleep(5)
                 soup = BeautifulSoup(reqs.text, 'html.parser')
                 reqs.close()
                 contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
@@ -907,24 +1062,21 @@ class KMP:
 
                 # Add attachments
                 for i in js.get('attachments'):
-                    if "https" != i.get('path')[0:5]:
-                        url = self.__CONTAINER_PREFIX + i.get('path')
-                    else:
-                        url = i.get('path')
-                    stringBuilder.append(url + '\n\n')
-                    
-                    # Check if the attachment is dupe
-                    value = self.__register.hashtable_lookup_value(url)
-                    if value == None:   # If not registered, add to register at value 1
-                        self.__register.hashtable_add(KVPair[str, int](url, 1))
-                    
+                    if(i.get('path')):
+                        if "https" != i.get('path')[0:5]:
+                            url = self.__CONTAINER_PREFIX + i.get('path')
+                        else:
+                            url = i.get('path')
+                        stringBuilder.append(url + '\n\n')
+                        
+                        
                         # Download the attachment
                         if get_list:
                             task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], False)))
                         else:
                             self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
                         counter += 1
-                    # If is on the register, do not download the attachment
+                        # If is on the register, do not download the attachment
 
         # Write to file
         return stringBuilder if(not get_list) else (stringBuilder, task_list,)
@@ -942,7 +1094,7 @@ class KMP:
         value = self.__register.hashtable_lookup_value(dir)
         if value != None:  # If register, update titleDir and increment value
             self.__register.hashtable_edit_value(dir, value + 1)
-            dir = dir[0:len(dir) - 1] + "(" + str(value) + ")\\"
+            dir = dir[0:len(dir) - 1] + " (" + str(value) + ")\\"
         else:   # If not registered, add to register at value 1
             self.__register.hashtable_add(KVPair[str, int](dir, 1))
 
@@ -1042,6 +1194,7 @@ class KMP:
                     reqs = self.__session.get(url, timeout=5, headers=HEADERS)
                 except(requests.exceptions.ConnectionError ,requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                      logging.debug("Connection timeout")
+                     time.sleep(5)
             if(reqs.status_code >= 400):
                 logging.error("Status code " + str(reqs.status_code))
             soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -1350,7 +1503,7 @@ def help() -> None:
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
-        -r --maxretries <#> : Maximum number of HTTP code retries, default is infinite\n\
+        -r --maxretries <#> : Maximum number of HTTP code retries, default is 100 (negative for infinite which is highly unrecommended)\n\
         -h --help : Help\n\
         --EXPERIMENTAL : Enable experimental mode\n\
         --BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything\n")
@@ -1359,11 +1512,11 @@ def main() -> None:
     """
     Program runner
     """
-    #logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    #logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
-    # logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
+    #logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False
     unzip = False
