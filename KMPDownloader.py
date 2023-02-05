@@ -36,7 +36,8 @@ Using multithreading
 - HTTP retries no longer infinite by default
 - Post content with embedded containerlized elements like embedded GDrive files links are saved to file
 - Duplicate files with now have space in between filename and () to conform to windows standards
-- Signficantly improved duplicate file search algorithm for local files
+- Duplicate file algorithm now takes into account locally available files
+- Duplicate file algorithm no longer overwrites local files 
 
 @author Jeff Chen
 @version 0.6.1
@@ -104,10 +105,11 @@ class KMP:
     __minsize:bool                      # Minimum downloadable file size
     __existing_file_register:HashTable  # Existing files and their size
     __existing_file_register_lock:Lock  # Lock for existing file table
+    __predupe:bool                      # True to prepend () in cases of dupe, false to postpend ()
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0) -> None:
+        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -126,6 +128,7 @@ class KMP:
             db_name: database name, this object creates or extends upon 2 tables named Parent & Child
             track: true to add entries to database, false otherwise
             update: Routines update instead of downloading artists
+            predupe: True to prepend () in cases of dupe, false to postpend ()
         """
         tname.id = None
         if folder:
@@ -203,10 +206,12 @@ class KMP:
         self.__session.mount('http://', adapter)
         
         # TODO choose better number
-        self.__existing_file_register = HashTable(1000000)
+        self.__existing_file_register = HashTable(10000)
         self.__existing_file_register_lock = Lock()
         self.__fregister_preload(folder, self.__existing_file_register)
         #self.__existing_file_register.hashtable_print()
+        self.__predupe = predupe
+        
         
         
     
@@ -263,27 +268,50 @@ class KMP:
                 fsize = os.stat(file.path).st_size
                 
                 # Remove (...) if it exists
-                # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
-                if ' (' in file.name:
-                    ext = file.name.rpartition('.')[2]
-                    basename = file.name.partition(" (")[0]
-                    fullpath = dir + basename + "." + ext
-                elif '(' in file.name:
-                    ext = file.name.rpartition('.')[2]
-                    basename = file.name.partition("(")[0]
-                    fullpath = dir + basename + "." + ext
+                # Predupe case
+                if file.name[0] == "(":
+                    basename = file.name.rpartition(") ")[2]
+                    fullpath = dir + basename
+                
+                # Postdupe case
                 else:
-                    fullpath = file.path 
-                    
-                # Add size value to register
-                data = fregister.hashtable_lookup_value(fullpath)
-                # If entry does not exists, add it               
-                if not data:
-                    fregister.hashtable_add(KVPair(fullpath, [fsize]))
-                # Else append data to currently existing entry
-                else:
-                    data.append(fsize)
-                    fregister.hashtable_edit_value(fullpath, data)
+                    # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
+                    if ' (' in file.name:
+                        ext = file.name.rpartition('.')[2]
+                        basename = file.name.partition(" (")[0]
+                        fullpath = dir + basename + "." + ext
+                    elif '(' in file.name:
+                        ext = file.name.rpartition('.')[2]
+                        basename = file.name.partition("(")[0]
+                        fullpath = dir + basename + "." + ext
+                    else:
+                        fullpath = file.path 
+                
+                # Check if is text file
+                if(file.name.endswith("txt")):
+                    # Add file contents to register
+                    with open(file.path, 'r', encoding="utf-8") as fd:
+                        # Text content of file
+                        contents = fd.read()
+                        
+                        data = fregister.hashtable_lookup_value(fullpath)
+                        # If entry does not exists, add it               
+                        if not data:
+                            fregister.hashtable_add(KVPair(fullpath, [contents]))
+                        # Else append data to currently existing entry
+                        else:
+                            data.append(contents)
+                            fregister.hashtable_edit_value(fullpath, data)
+                else:    
+                    # Add size value to register
+                    data = fregister.hashtable_lookup_value(fullpath)
+                    # If entry does not exists, add it               
+                    if not data:
+                        fregister.hashtable_add(KVPair(fullpath, [fsize]))
+                    # Else append data to currently existing entry
+                    else:
+                        data.append(fsize)
+                        fregister.hashtable_edit_value(fullpath, data)
 
             # TODO sort values by radix sort and implement binary search
         
@@ -421,13 +449,22 @@ class KMP:
                 failed = False
                 
                 # Make a new file name according to number of matching fname entries
-                if len(values) == 0:
-                    download_fname = fname
-                else:
-                    # Starts at 0 due to backward compatibility with previous dupe naming scheme
-                    ftokens = fname.rpartition('.')
-                    download_fname = ftokens[0] + " (" + str(len(values - 1)) + ")." + ftokens[2]
+                download_fname = fname
                 
+                # Make sure that file does not already exists
+                i = 0
+                while(os.path.exists(download_fname)):
+                    # Starts at 0 due to backward compatibility with previous dupe naming scheme
+                    # predupe case
+                    if self.__predupe:
+                        ftokens = fname.rpartition('\\')
+                        download_fname = ftokens[0] + "\\(" + str(i) + ") " + ftokens[2]
+                    # postdupe case
+                    else:
+                        ftokens = fname.rpartition('.')     
+                        download_fname = ftokens[0] + " (" + str(i) + ")." + ftokens[2]
+                    i += 1
+                    
                 # Add file size to hash table
                 values.append(fullsize)
                 self.__existing_file_register.hashtable_edit_value(download_fname, values)
@@ -806,34 +843,64 @@ class KMP:
         # Skip post content is switch is on
         if not self.__exclcontents:
             if content:
-                if(os.path.exists(titleDir + work_name + "post__content.txt")):
-                    logging.debug("Skipping duplicate post_content download")
-                else:
-                    text = content.getText(separator='\n', strip=True)
-                    if len(text) > 0:
-                        # Text section
-                        with open(titleDir + work_name + "post__content.txt", "w", encoding="utf-8") as fd:
-                            fd.write(text)
-                            links = content.find_all("a")
-                            for link in links:
-                                hr = link.get('href')
-                                if not hr:
-                                    logging.info("Href returns None at url: {u}".format(u=url))
-                                else:
-                                    fd.write("\n" + hr)
-                            
-                            # Nested content
-                            containers = content.find_all("div")
-                            prev = None     # Used to get the entire div, not the internal nested divs
-                            for container in containers:                                
-                                # check if the current container is nested within the previous one
-                                if not prev or prev and container.contents[0] not in prev:
-                                    # if not, write to file
-                                    fd.write("\n" + "Embedded Container: {}".format(container.contents[0]))
+                text = content.getText(separator='\n', strip=True)
+                writable = False
+                if len(text) > 0:
+                    # Text section
+                    post_contents = ""
+                    post_contents += text
+                    links = content.find_all("a")
+                    for link in links:
+                        hr = link.get('href')
+                        if not hr:
+                            logging.info("Href returns None at url: {u}".format(u=url))
+                        else:
+                            post_contents += ("\n" + hr)
+                    
+                    # Nested content
+                    containers = content.find_all("div")
+                    prev = None     # Used to get the entire div, not the internal nested divs
+                    for container in containers:                                
+                        # check if the current container is nested within the previous one
+                        if not prev or prev and container.contents[0] not in prev:
+                            # if not, write to file
+                            post_contents += ("\n" + "Embedded Container: {}".format(container.contents[0]))
+                        
+                        # update prev
+                        prev = container.contents[0]
+                    
+                    # Check to see if post__content already exists
+                    if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__content.txt") > 0):
+                        # If it already exists, check if contents match
+                        values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__content.txt")
+                        # If contents match, is duplicates
+                        if post_contents in values:
+                            logging.debug("Post comments already exists")
+                        # If not, write to file
+                        else:
+                            writable = True
+                    
+                    # If does not exists, add it and write to file
+                    else:
+                        self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__content.txt", [post_contents]))
+                        writable = True
+                
+                    # Write to file
+                    if(writable):
+                        contents_file =  titleDir + work_name + "post__content.txt"
+                        i = 0
+                        
+                        while(os.path.exists(contents_file)):
+                            # Starts at 0 due to backward compatibility with previous dupe naming scheme
+                            # predupe case
+                            if self.__predupe:
+                                contents_file = titleDir + work_name + "(" + str(i) + ") post__content.txt"
+                            # postdupe case
+                            else:
+                                contents_file = titleDir + work_name + "post__content" + " (" + str(i) + ").txt"
+                            i += 1
+                        jutils.write_utf8(post_contents, contents_file, 'w')
                                 
-                                # update prev
-                                prev = container.contents[0]
-                                    
                                     
                 
                 # Image Section
@@ -857,19 +924,53 @@ class KMP:
                         else:
                             self.__threads.enqueue((self.__download_file, (src, fname)))
         
-        
+
 
         # Download post comments ################################################
         # Skip if omit comment switch is on
         if not self.__exclcomments:
-            if(os.path.exists(titleDir + work_name + "post__comments.txt")):
-                    logging.debug("Skipping duplicate post comments")
-            elif "patreon" in url or "fanbox" in url:
+                
+            if "patreon" in url or "fanbox" in url:
                 comments = soup.find("div", class_="post__comments")
-                if comments and len(comments.getText(strip=True)) > 0:
-                    text = comments.getText(separator='\n', strip=True)
+                writable = False
+                text = comments.getText(separator='\n', strip=True)
+                # Check for duplicate and writablility
+                if comments and len(text) > 0:
                     if(text and text != "No comments found for this post." and len(text) > 0):
-                        jutils.write_utf8(comments.getText(separator='\n', strip=True), titleDir + work_name + "post__comments.txt", 'w')
+                        
+                        # Check if post comments already exists in the work directory
+                        if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__comments.txt") > 0):
+                            # If it already exists, check if contents match
+                            values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__comments.txt")
+                            # If contents match, is duplicates
+                            if text in values:
+                                logging.debug("Post comments already exists")
+                            # If not, write to file
+                            else:
+                                writable = True
+                        
+                        # If does not exists, add it and write to file
+                        else:
+                            self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__comments.txt", [comments]))
+                            writable = True
+                
+                # Write to file
+                if(writable):
+                    comments_file =  titleDir + work_name + "post__comments.txt"
+                    i = 0
+                    
+                    while(os.path.exists(comments_file)):
+                        # Starts at 0 due to backward compatibility with previous dupe naming scheme
+                        # predupe case
+                        if self.__predupe:
+                            comments_file = titleDir + work_name + "(" + str(i) + ") post__comments.txt"
+                        # postdupe case
+                        else:
+                            comments_file = titleDir + work_name + "post__comments" + " (" + str(i) + ").txt"
+                        i += 1
+                    jutils.write_utf8(text, comments_file, 'w')
+                    
+                
             
         # Add to post process queue if partial unpack is on
         if self.__unpacked == 1:
@@ -1482,7 +1583,9 @@ def help() -> None:
         -c --chunksz <#> : Adjust download chunk size in bytes (Default is 64M)\n\
         -t --threadct <#> : Change download thread count (default is 1, max is 3)\n\
         -w --wait <#> : Delay between downloads in seconds (default is 0.25s)\n\
-        -b --track : Track artists which can updated later, not supported for discord\n")
+        -b --track : Track artists which can updated later, not supported for discord\n\
+        -a --predupe : Prepend () instead of postpending in duplicate file case")
+        
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
         -x --excludefile \"txt, zip, ..., png\" : Exclude files with listed extensions, NO '.'s\n\
@@ -1512,9 +1615,9 @@ def main() -> None:
     """
     Program runner
     """
-    logging.basicConfig(level=logging.DEBUG)
+    #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    #logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
     #logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
@@ -1538,6 +1641,7 @@ def main() -> None:
     track = False
     exclcomments = False
     exclcontents = False
+    predupe = False
     minsize = 0
     
     if len(sys.argv) > 1:
@@ -1578,7 +1682,11 @@ def main() -> None:
             elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
                 server_name = True
                 pointer += 1
-                logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))                
+                logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))          
+            elif sys.argv[pointer] == '-a' or sys.argv[pointer] == '--predupe':
+                predupe = True
+                pointer += 1
+                logging.info("PREDUPE -> " + str(predupe))          
             elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
                 unpacked = True
                 partial_unpack = False
@@ -1658,7 +1766,7 @@ def main() -> None:
     if folder or update:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe)
         
         if experimental or benchmark:
             if unpacked:
