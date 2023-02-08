@@ -1,6 +1,8 @@
 from queue import Queue
 import shutil
+import sqlite3
 from threading import Lock, Semaphore
+import traceback
 import requests
 from bs4 import BeautifulSoup, ResultSet
 import os
@@ -13,6 +15,7 @@ import logging
 import requests.adapters
 from datetime import datetime, timezone
 from ssl import SSLError
+import mimetypes
 
 
 from Threadpool import tname
@@ -26,8 +29,7 @@ import alive_progress
 from PersistentCounter import PersistentCounter
 import jutils
 from DB import DB
-from traceback import print_exc
-from inspect import currentframe, getframeinfo
+
 
 """
 Simple kemono.party downloader relying on html parsing and download by url
@@ -38,6 +40,12 @@ Using multithreading
 - Duplicate files with now have space in between filename and () to conform to windows standards
 - Duplicate file algorithm now takes into account locally available files
 - Duplicate file algorithm no longer overwrites local files 
+- Temporarily removed resume download when stopped due to HTTP errors, download now completely restarts
+- Fixed issue where program hangs up on random post attachments due to not being supported for download
+- Database is now backed up when database related switches are used 
+- Database updated to contain 2 new entries "artist" and "config", old databases are automatically updated
+    to this new format
+- Database is now updated at the end of program execution to lower locking issues 
 
 @author Jeff Chen
 @version 0.6.1
@@ -106,6 +114,11 @@ class KMP:
     __existing_file_register:HashTable  # Existing files and their size
     __existing_file_register_lock:Lock  # Lock for existing file table
     __predupe:bool                      # True to prepend () in cases of dupe, false to postpend ()
+    __urls:list[str]                    # List of downloaded artist urls
+    __latest_urls:list[str]             # List of downloaded artist's latest urls
+    __override_paths:list[str]           # List of file paths to override old file paths if they exists in db
+    __config:tuple                      # Download configuration
+    __artist:list[str]                  # Downloaded artist name
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
@@ -154,6 +167,11 @@ class KMP:
         self.__update = update
         self.__exclcomments = exclcomments
         self.__exclcontents = exclcontents
+        self.__urls = []    
+        self.__latest_urls = []     
+        self.__override_paths = []         
+        self.__config = locals() 
+        self.__artist = []       
         if minsize < 0:
             self.__minsize = 0
         else:
@@ -188,9 +206,42 @@ class KMP:
         else:
             self.__ext_blacklist = None
         
-        # Create database and 2 tables #############
+        # Create database  #############
         if track or update:
-            self.__db.executeNCommit("CREATE TABLE IF NOT EXISTS Parent (url TEXT, type TEXT, latest TEXT, destination TEXT)")
+            # Check if database exists
+            if os.path.exists(os.path.join("./", db_name)):
+                # If exists, create a backup
+                if(not os.path.exists(os.path.join("./", "Data_Backup"))):
+                    os.makedirs(os.path.join("./", "Data_Backup"))
+                # Copy db file to backup location
+                db_part_name = db_name.rpartition('.')
+                shutil.copyfile(os.path.join("./", db_name), os.path.join("./", "Data_Backup/", db_part_name[0] + "-" + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') + "." + db_part_name[2])) 
+                
+            
+            # Create a new table
+            self.__db.executeNCommit("CREATE TABLE IF NOT EXISTS Parent2 (url TEXT, artist TEXT, type TEXT, latest TEXT, destination TEXT, config TEXT)")
+             
+            # Update older databases
+            legacy_table:sqlite3.Cursor = self.__db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='Parent'").fetchall()
+            
+            if (len(legacy_table) == 1):
+                cursor = self.__db.execute("SELECT * from Parent")
+                col_names = [description[0] for description in cursor.description]
+                
+                # Version 6.0's db
+                if len(col_names) == 4:
+                    # Get all column data
+                    urls = [item[0] for item in self.__db.execute("SELECT url FROM Parent").fetchall()]
+                    latest = [item[0] for item in self.__db.execute("SELECT latest FROM Parent").fetchall()]
+                    dfolder = [item[0] for item in self.__db.execute("SELECT destination FROM Parent").fetchall()]
+                    
+                    # Add to the new table
+                    for i in range(0, len(urls)):
+                        self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (urls[i], None, latest[i], dfolder[i], None),))
+                        
+                    # Remove old table
+                    self.__db.executeNCommit("DROP TABLE Parent")
+           
         else:
             self.__db = None
         
@@ -198,14 +249,17 @@ class KMP:
         self.__sessions = []
         for _ in range(0, max(self.__tcount, self.__tcount)):
             session = cfscrape.create_scraper(requests.Session())
+            session.max_redirects = 5
             adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
             self.__sessions.append(session)
         self.__session = cfscrape.create_scraper(requests.Session())
+        self.__session.max_redirects = 5
         adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
         self.__session.mount('http://', adapter)
         
         # TODO choose better number
+        logging.info("Please wait, scanning directory")
         self.__existing_file_register = HashTable(10000)
         self.__existing_file_register_lock = Lock()
         self.__fregister_preload(folder, self.__existing_file_register)
@@ -290,18 +344,24 @@ class KMP:
                 # Check if is text file
                 if(file.name.endswith("txt")):
                     # Add file contents to register
-                    with open(file.path, 'r', encoding="utf-8") as fd:
-                        # Text content of file
-                        contents = fd.read()
-                        
-                        data = fregister.hashtable_lookup_value(fullpath)
-                        # If entry does not exists, add it               
-                        if not data:
-                            fregister.hashtable_add(KVPair(fullpath, [contents]))
-                        # Else append data to currently existing entry
-                        else:
-                            data.append(contents)
-                            fregister.hashtable_edit_value(fullpath, data)
+                    try:
+                        with open(file.path, 'r', encoding="utf-8") as fd:
+                            # Text content of file
+                            contents = fd.read()
+                            
+                            data = fregister.hashtable_lookup_value(fullpath)
+                            # If entry does not exists, add it               
+                            if not data:
+                                fregister.hashtable_add(KVPair(fullpath, [contents]))
+                            # Else append data to currently existing entry
+                            else:
+                                data.append(contents)
+                                fregister.hashtable_edit_value(fullpath, data)
+                    except(UnicodeDecodeError):
+                        logging.warning("UnicodeDecodeError in {}, removing file".format(file.path))
+                        os.remove(file.path)
+                    except Exception as e:
+                        logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
                 else:    
                     # Add size value to register
                     data = fregister.hashtable_lookup_value(fullpath)
@@ -333,6 +393,23 @@ class KMP:
         [session.close() for session in self.__sessions]
         self.__session.close()
         
+        # Update db
+        if self.__db:
+            try:
+                for i in range(0, len(self.__urls)):
+                    # Check if db entry already exists
+                    entry = self.__db.execute(("SELECT url FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                    # If it already exists, remove the entry
+                    if entry:
+                        self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+
+                    # Insert updated entry
+                    #self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?, ?)", (self.__urls[i], self.__latest_urls[i], self.__override_paths[i],),))
+                    self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config)),))
+            except sqlite3.OperationalError:
+                logging.warning("Database is locked, waiting 10s before trying again".format(self.__db))
+                time.sleep(10)
+        
         if self.__db:
             self.__db.commit()
             self.__db.close()
@@ -357,6 +434,7 @@ class KMP:
         if not tname.name:
             tname.name = "default thread name" 
             session = cfscrape.create_scraper(requests.Session())
+            session.max_redirects = 5
             adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
             close = True 
@@ -404,6 +482,9 @@ class KMP:
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 notifcation+=1
                 time.sleep(1)
+            except(requests.exceptions.TooManyRedirects):
+                logging.warning("Redirects trap detected for {}, restarting download in 10 seconds".format(src))
+                time.sleep(10)
                 
                 if(notifcation % 10 == 0):
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
@@ -477,17 +558,6 @@ class KMP:
                         while not data:
                             try:
                                 data = session.get(src, stream=True, timeout=5, headers=headers)
-                                
-                                # If 302 error (resourced moved) occurs, get the new src and add it to the threadpool
-                                if(r.status_code == 302):
-                                    newsrc = r.json()['headers']['Location']
-                                    logging.debug("Resource was moved to {} from {}".format(newsrc, src))
-                                    self.__threads.enqueue((self.__download_file, (newsrc, fname, display_bar,)))
-                                    
-                                    if close:
-                                        session.close()
-                                    
-                                    return
                                         
                             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                                 logging.error("Connection timeout on {url}".format(url=src))
@@ -549,9 +619,9 @@ class KMP:
                             
                         else:
                             logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
-                            headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
-                                    'Range': 'bytes=' + str(downloaded) + '-' + str(fullsize)}
-                            mode = 'ab'
+                            #headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
+                            #        'Range': 'bytes=' + str(downloaded) + '-' + str(fullsize)}
+                            #mode = 'ab'
                     except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
                         logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
                         time.sleep(5)
@@ -756,6 +826,7 @@ class KMP:
         if not tname.id:
             close = True
             session = cfscrape.create_scraper(requests.Session())
+            session.max_redirects = 5
             adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
             close = True
@@ -860,22 +931,28 @@ class KMP:
                     # Nested content
                     containers = content.find_all("div")
                     prev = None     # Used to get the entire div, not the internal nested divs
-                    for container in containers:                                
-                        # check if the current container is nested within the previous one
-                        if not prev or prev and container.contents[0] not in prev:
-                            # if not, write to file
-                            post_contents += ("\n" + "Embedded Container: {}".format(container.contents[0]))
-                        
-                        # update prev
-                        prev = container.contents[0]
                     
+                    if containers:
+                        for container in containers:  
+                            # Ignore empty containers
+                            if len(container.contents) > 0:
+                                                          
+                                # check if the current container is nested within the previous one
+                                if not prev or (prev and container.contents[0] not in prev):
+                                    # if not, write to file
+                                    post_contents += ("\n" + "Embedded Container: {}".format(container.contents[0]))
+                                
+                                # update prev
+                                prev = container.contents[0]
+                        
+                    self.__existing_file_register_lock.acquire()
                     # Check to see if post__content already exists
                     if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__content.txt") > 0):
                         # If it already exists, check if contents match
                         values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__content.txt")
                         # If contents match, is duplicates
                         if post_contents in values:
-                            logging.debug("Post comments already exists")
+                            logging.debug("Post contents already exists")
                         # If not, write to file
                         else:
                             writable = True
@@ -884,7 +961,9 @@ class KMP:
                     else:
                         self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__content.txt", [post_contents]))
                         writable = True
-                
+                    
+                    self.__existing_file_register_lock.release()
+                    
                     # Write to file
                     if(writable):
                         contents_file =  titleDir + work_name + "post__content.txt"
@@ -910,9 +989,11 @@ class KMP:
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
             for attachment in attachments:
+                if not attachment:
+                    logging.fatal("No href on {}".format(url))
                 download = attachment.get('href')
-                # Confirm that attachment not from patreon 
-                if download and 'patreon' not in download:
+                # Confirm that mime type of attachment is not html or None
+                if download and mimetypes.guess_extension(download) != None and 'html' not in mimetypes.guess_extension(download)[0]:
                     src = self.__CONTAINER_PREFIX + download
                     aname =  self.__trim_fname(attachment.text.strip())
                     # If src does not contain excluded keywords, download it
@@ -938,6 +1019,7 @@ class KMP:
                 if comments and len(text) > 0:
                     if(text and text != "No comments found for this post." and len(text) > 0):
                         
+                        self.__existing_file_register_lock.acquire()
                         # Check if post comments already exists in the work directory
                         if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__comments.txt") > 0):
                             # If it already exists, check if contents match
@@ -953,7 +1035,7 @@ class KMP:
                         else:
                             self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__comments.txt", [comments]))
                             writable = True
-                
+                        self.__existing_file_register_lock.release()
                 # Write to file
                 if(writable):
                     comments_file =  titleDir + work_name + "post__comments.txt"
@@ -1060,20 +1142,14 @@ class KMP:
         contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
         suffix = "?o="
         counter = 0
-                    
+        
         # Update db if window is continuous
         if continuous and self.__db:
-            # Check if db entry already exists
-            entry = self.__db.execute(("SELECT url FROM Parent WHERE url = ?", (url,),))
-             
-            # If it already exists, remove the entry
-            if entry:
-                self.__db.execute(("DELETE FROM Parent WHERE url = ?", (url,),))
-
-            # Insert updated entry
-            self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?, ?)", (url, self.__CONTAINER_PREFIX + contLinks[0]['href'] if len(contLinks) > 0 else None, override_path if override_path else self.__folder,),))
-
-
+            self.__urls.append(url)
+            self.__latest_urls.append(self.__CONTAINER_PREFIX + contLinks[0]['href'] if len(contLinks) > 0 else None)
+            self.__override_paths.append(override_path if override_path else self.__folder)
+            self.__artist.append(artist.get('content'))
+           
         # Process each window
         while contLinks:
             # Process all links on page
@@ -1416,7 +1492,13 @@ class KMP:
         
         if self.__update:
             # Get all artists and their destinations from database
-            rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+            rows = None
+            while not rows:
+                try:
+                    rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+                except sqlite3.OperationalError:
+                    logging.warning("Database is locked, waiting 10s before trying again")
+                    time.sleep(10)
             
             # Compile a list of urls, their download path, and latest url
             url = [row[0] for row in rows]
@@ -1521,7 +1603,13 @@ class KMP:
         
         if self.__update:
             # Get all artists and their destinations from database
-            rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+            rows = None
+            while not rows:
+                try:
+                    rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+                except sqlite3.OperationalError:
+                    logging.warning("Database is locked, waiting 10s before trying again")
+                    time.sleep(10)
             
             # Compile a list of urls, their download path, and latest url
             url = [row[0] for row in rows]
@@ -1615,9 +1703,9 @@ def main() -> None:
     """
     Program runner
     """
-    #logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    #logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
     #logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
@@ -1767,22 +1855,25 @@ def main() -> None:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
                 exclcontents=exclcontents, minsize=minsize, predupe=predupe)
-        
-        if experimental or benchmark:
-            if unpacked:
-                downloader.alt_routine(urls, 2, benchmark)
-            elif partial_unpack:
-                downloader.alt_routine(urls, 1, benchmark)
+        try:
+            if experimental or benchmark:
+                if unpacked:
+                    downloader.alt_routine(urls, 2, benchmark)
+                elif partial_unpack:
+                    downloader.alt_routine(urls, 1, benchmark)
+                else:
+                    downloader.alt_routine(urls, 0, benchmark)
             else:
-                downloader.alt_routine(urls, 0, benchmark)
-        else:
-            if unpacked:
-                downloader.routine(urls, 2)
-            elif partial_unpack:
-                downloader.routine(urls, 1)
-            else:
-                downloader.routine(urls, 0)
-        downloader.close()
+                if unpacked:
+                    downloader.routine(urls, 2)
+                elif partial_unpack:
+                    downloader.routine(urls, 1)
+                else:
+                    downloader.routine(urls, 0)
+            downloader.close()
+        except Exception as e:
+            logging.fatal("Unrecoverable unhandled exception has occured!, writing to {}".format(LOG_NAME))
+            jutils.write_to_file(LOG_NAME, "Unhandled exception has occured:\n" + traceback.format_exc(), LOG_MUTEX)
     else:
         help()
 
