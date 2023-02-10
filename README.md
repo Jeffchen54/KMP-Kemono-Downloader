@@ -23,7 +23,7 @@ View changelog for more details on features not included here.
 **New feature which is still in development
 
 ## Instructions:
-**Need in depth details? Please visit the [wiki](https://github.com/Jeffchen54/KMP-Kemono-Downloader/wiki)!**
+**Need in depth details or want to view all features? Please visit the [wiki](https://github.com/Jeffchen54/KMP-Kemono-Downloader/wiki)!**
 
 Download Python >=3.10
 
