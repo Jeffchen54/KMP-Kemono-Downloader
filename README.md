@@ -178,10 +178,16 @@ File could not be downloaded due to HTML error. Can be caused by many cases. In 
  To solve this, do not use the '-e' switch. Remove it and rerun the program, the program will automatically rename all files and you will get this instead:
  
  <img width="713" alt="image" src="https://user-images.githubusercontent.com/78765964/185966035-672a3da2-27aa-483d-a1ed-6496779a13a4.png">
-
+ 
+ ## Bugs
+ 1. Download halts on certain posts due to dead links in their post content.
+ 2. --omitcontent switch omits everything in post content when supposed to only omit text. Can circumnavigate the issues in (1) with the current buggy functionality. 
+ 3. Backslash at the end of file paths will cause that path to be registered as invalid.
+ 4. 502 errors are used to rate limit, can be added to http codes to retry on through a switch but should be retried by default.
+ 
  ### Specific Discord Issues:
 - Root directory of downloaded discord files are all numbers, cannot be fixed easily since the home page of a discord artist does not contain their name. Number is associated with the the Xs in https://kemono.party/discord/server/xxxxxxxxxxxxxxxx.
-    
+
 ## Changelog 0.6
 - Adjusted thread count to a more reasonable amount.
 - Default thread count now is 1 thread, default settings are meant to succeed most of the time.
