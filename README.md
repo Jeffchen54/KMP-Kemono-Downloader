@@ -13,13 +13,12 @@ View changelog for more details on features not included here.
 - Can download a single artist work, all artist works, or a single page of artist works.
 - Download all files and any downloads in high resolution and correct extension.
 - Automatic file unzipping for .7z, .zip, and .rar files. 
-- Extraction of a work's content and comments*.
+- Extraction of a work's content and comments.
+- High degree of control over downloads. Includes blacklisting file extensions, posts with certain keywords, omittion of certain download items, and much more!
 - Queuing system, download multiple URLs without user input
 - Multhreading support, significant download speed bonus.
 - Ease of use, cookies are for eating only!  
 - Automatically artist work updates**.
-
-*Extraction is content is limited to text only. Hyperlinks will have their target url extracted for post content.
 
 **New feature which is still in development
 
