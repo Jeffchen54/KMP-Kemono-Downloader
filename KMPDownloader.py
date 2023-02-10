@@ -47,6 +47,7 @@ Using multithreading
     to this new format
 - Database is now updated at the end of program execution to lower locking issues 
 
+
 @author Jeff Chen
 @version 0.6.1
 @last modified 1/28/2023
@@ -122,7 +123,7 @@ class KMP:
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False) -> None:
+        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -142,6 +143,7 @@ class KMP:
             track: true to add entries to database, false otherwise
             update: Routines update instead of downloading artists
             predupe: True to prepend () in cases of dupe, false to postpend ()
+            kwargs: not in use for now
         """
         tname.id = None
         if folder:
@@ -151,7 +153,7 @@ class KMP:
         self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
         self.__progress = Semaphore(value=0)
-        self.__register = HashTable(1000000)
+        self.__register = HashTable(10)
         self.__fcount = 0
         self.__unzip = unzip
         self.__fcount_mutex = Lock()
@@ -260,17 +262,27 @@ class KMP:
         
         # TODO choose better number
         logging.info("Please wait, scanning directory")
-        self.__existing_file_register = HashTable(10000)
+        self.__existing_file_register = HashTable(1000000)
         self.__existing_file_register_lock = Lock()
-        self.__fregister_preload(folder, self.__existing_file_register)
-        #self.__existing_file_register.hashtable_print()
+        # If update is selected, read in all update paths
+        if update:
+            # Use a set to skip ignore duplicate paths
+            update_path_set = {item[0] for item in self.__db.execute("SELECT destination FROM Parent2").fetchall()}
+            for path in update_path_set:
+                self.__fregister_preload(path, self.__existing_file_register, self.__existing_file_register_lock)
+
+        # If update is not selected, read from download folder
+        else:
+            self.__fregister_preload(folder, self.__existing_file_register, self.__existing_file_register_lock)
+        logging.info("Finished scanning directory")
+        
         self.__predupe = predupe
         
         
         
     
         
-    def __fregister_preload(self, dir:str, fregister:HashTable) -> None:
+    def __fregister_preload(self, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
         Adds all files and their size to a hashtable
 
@@ -285,17 +297,23 @@ class KMP:
         # Pull up current directory information
         contents = os.scandir(dir)
         
+        # Generate thread pool
+        file_pool = ThreadPool(100)
+        file_pool.start_threads()
+                    
         # Iterate through all elements
         for file in contents:
             
             # If is a directory, recursive call into directory and append result
             if file.is_dir():
-                self.__fregister_preload_helper(file.path + '\\', fregister)
-          
+                file_pool.enqueue((self.__fregister_preload_helper, (file_pool, file.path + '\\', fregister, mutex,)))
 
             # TODO sort values by radix sort and implement binary search
-    
-    def __fregister_preload_helper(self, dir:str, fregister:HashTable) -> None:
+
+        file_pool.join_queue()
+        file_pool.kill_threads()
+        
+    def __fregister_preload_helper(self, pool:ThreadPool, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
         Adds all files and their size to a hashtable
 
@@ -315,7 +333,7 @@ class KMP:
             
             # If is a directory, recursive call into directory and append result
             if file.is_dir():
-                self.__fregister_preload_helper(file.path + '\\', fregister)
+                pool.enqueue((self.__fregister_preload_helper, (pool, file.path + '\\', fregister, mutex,)))
             # If not directory, get file size and remove any ()
             elif file.stat().st_size > 0:
                 # Get file size
@@ -349,6 +367,7 @@ class KMP:
                             # Text content of file
                             contents = fd.read()
                             
+                            mutex.acquire()
                             data = fregister.hashtable_lookup_value(fullpath)
                             # If entry does not exists, add it               
                             if not data:
@@ -357,12 +376,14 @@ class KMP:
                             else:
                                 data.append(contents)
                                 fregister.hashtable_edit_value(fullpath, data)
+                            mutex.release()
                     except(UnicodeDecodeError):
                         logging.warning("UnicodeDecodeError in {}, removing file".format(file.path))
                         os.remove(file.path)
                     except Exception as e:
                         logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
                 else:    
+                    mutex.acquire()
                     # Add size value to register
                     data = fregister.hashtable_lookup_value(fullpath)
                     # If entry does not exists, add it               
@@ -372,6 +393,7 @@ class KMP:
                     else:
                         data.append(fsize)
                         fregister.hashtable_edit_value(fullpath, data)
+                    mutex.release()
 
             # TODO sort values by radix sort and implement binary search
         
@@ -380,6 +402,7 @@ class KMP:
         Resets register and download count, should be called if the KMP
         object will be reused; otherwise, downloaded url data will persist
         and file download and failed count will persist.
+        DEPRECATED, needs to be updated
         """
         self. __register = HashTable(10)
         self.__fcount = 0
@@ -395,22 +418,24 @@ class KMP:
         
         # Update db
         if self.__db:
-            try:
-                for i in range(0, len(self.__urls)):
-                    # Check if db entry already exists
-                    entry = self.__db.execute(("SELECT url FROM Parent2 WHERE url = ?", (self.__urls[i],),))
-                    # If it already exists, remove the entry
-                    if entry:
-                        self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+            done = False
+            while not done:
+                try:
+                    for i in range(0, len(self.__urls)):
+                        # Check if db entry already exists
+                        entry = self.__db.execute(("SELECT url FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                        # If it already exists, remove the entry
+                        if entry:
+                            self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
 
-                    # Insert updated entry
-                    #self.__db.execute(("INSERT INTO Parent VALUES (?, 'Kemono', ?, ?)", (self.__urls[i], self.__latest_urls[i], self.__override_paths[i],),))
-                    self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config)),))
-            except sqlite3.OperationalError:
-                logging.warning("Database is locked, waiting 10s before trying again".format(self.__db))
-                time.sleep(10)
+                        # Insert updated entry
+                        self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config)),))
+                    done = True
+                except sqlite3.OperationalError:
+                    logging.warning(traceback.format_exc)
+                    logging.warning("Database is locked, waiting 10s before trying again".format(self.__db))
+                    time.sleep(10)
         
-        if self.__db:
             self.__db.commit()
             self.__db.close()
 
@@ -1495,15 +1520,16 @@ class KMP:
             rows = None
             while not rows:
                 try:
-                    rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+                    rows = self.__db.execute("SELECT * FROM Parent2").fetchall()
                 except sqlite3.OperationalError:
+                    logging.warning(traceback.format_exc)
                     logging.warning("Database is locked, waiting 10s before trying again")
                     time.sleep(10)
             
             # Compile a list of urls, their download path, and latest url
             url = [row[0] for row in rows]
-            latest = [row[2] for row in rows]
-            path = [row[3] for row in rows]
+            latest = [row[3] for row in rows]
+            path = [row[4] for row in rows]
             
             
             # Add all new urls to the queue list
@@ -1606,15 +1632,16 @@ class KMP:
             rows = None
             while not rows:
                 try:
-                    rows = self.__db.execute("SELECT * FROM Parent").fetchall()
+                    rows = self.__db.execute("SELECT * FROM Parent2").fetchall()
                 except sqlite3.OperationalError:
+                    logging.warning(traceback.format_exc)
                     logging.warning("Database is locked, waiting 10s before trying again")
                     time.sleep(10)
             
             # Compile a list of urls, their download path, and latest url
             url = [row[0] for row in rows]
-            latest = [row[2] for row in rows]
-            path = [row[3] for row in rows]
+            latest = [row[3] for row in rows]
+            path = [row[4] for row in rows]
             
             
             # Add all new urls to the queue list
@@ -1703,9 +1730,9 @@ def main() -> None:
     """
     Program runner
     """
-    logging.basicConfig(level=logging.DEBUG)
+    #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    #logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
     #logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
