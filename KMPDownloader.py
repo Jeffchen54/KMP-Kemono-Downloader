@@ -47,6 +47,7 @@ Using multithreading
     to this new format
 - Database is now updated at the end of program execution to lower locking issues 
 - Increased download thread ceiling to 5
+- HTTP code 502 added to HTTP retry list
 
 
 @author Jeff Chen
@@ -181,7 +182,7 @@ class KMP:
             self.__minsize = minsize
         
         if not http_codes or len(http_codes) == 0:
-            self.__http_codes = [429, 403]
+            self.__http_codes = [429, 403, 502]
         else:
             self.__http_codes = http_codes
         
