@@ -46,11 +46,12 @@ Using multithreading
 - Database updated to contain 2 new entries "artist" and "config", old databases are automatically updated
     to this new format
 - Database is now updated at the end of program execution to lower locking issues 
+- Increased download thread ceiling to 5
 
 
 @author Jeff Chen
 @version 0.6.1
-@last modified 1/28/2023
+@last modified 2/09/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -187,7 +188,7 @@ class KMP:
         if not tcount or tcount <= 0:
             self.__tcount = 1
         else:
-            self.__tcount = min(6 , tcount)
+            self.__tcount = min(5 , tcount)
             
         if wait < 0:
             self.__wait = 0.25
@@ -1882,25 +1883,23 @@ def main() -> None:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
                 exclcontents=exclcontents, minsize=minsize, predupe=predupe)
-        try:
-            if experimental or benchmark:
-                if unpacked:
-                    downloader.alt_routine(urls, 2, benchmark)
-                elif partial_unpack:
-                    downloader.alt_routine(urls, 1, benchmark)
-                else:
-                    downloader.alt_routine(urls, 0, benchmark)
+
+        if experimental or benchmark:
+            if unpacked:
+                downloader.alt_routine(urls, 2, benchmark)
+            elif partial_unpack:
+                downloader.alt_routine(urls, 1, benchmark)
             else:
-                if unpacked:
-                    downloader.routine(urls, 2)
-                elif partial_unpack:
-                    downloader.routine(urls, 1)
-                else:
-                    downloader.routine(urls, 0)
-            downloader.close()
-        except Exception as e:
-            logging.fatal("Unrecoverable unhandled exception has occured!, writing to {}".format(LOG_NAME))
-            jutils.write_to_file(LOG_NAME, "Unhandled exception has occured:\n" + traceback.format_exc(), LOG_MUTEX)
+                downloader.alt_routine(urls, 0, benchmark)
+        else:
+            if unpacked:
+                downloader.routine(urls, 2)
+            elif partial_unpack:
+                downloader.routine(urls, 1)
+            else:
+                downloader.routine(urls, 0)
+        downloader.close()
+      
     else:
         help()
 
