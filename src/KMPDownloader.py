@@ -28,6 +28,7 @@ import alive_progress
 from PersistentCounter import PersistentCounter
 import jutils
 from DB import DB
+import downloader
 
 
 """
@@ -464,53 +465,24 @@ class KMP:
         
         logging.debug("Downloading " + fname + " from " + src)
         r = None
-        timeout = 0
         notifcation = 0
         
         # Grabbing content length  ###########################################################################################################
-        while not r:
-            try:
-                r = session.request('HEAD', src, timeout=5)
-                if r.status_code >= 400:
-                    if r.status_code in self.__http_codes and 'kemono' in src:
-                        if timeout == self.__timeout:
-                            logging.critical("Reached maximum timeout, writing error to log")
-                            jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
-                            self.__failed_mutex.acquire()
-                            self.__failed += 1
-                            self.__failed_mutex.release()
-                            if not display_bar:
-                                self.__progress_mutex.acquire()
-                                self.__progress.release()
-                                self.__progress_mutex.release()
-                            return
-                        else:
-                            timeout += 1
-                            logging.warning("Kemono party is rate limiting this download, download restarted in 10 seconds:\nCode: " + str(r.status_code) + "\nSrc: " + src + "\nFname: " + fname)
-                            time.sleep(10)
-                        
-                    else:
-                        logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
-                        jutils.write_to_file(LOG_NAME, "{code} UNREGISTERED TIMEOUT AND NONKEMONO LINK -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
-                        self.__failed_mutex.acquire()
-                        self.__failed += 1
-                        self.__failed_mutex.release()
-                        if not display_bar:
-                            self.__progress_mutex.acquire()
-                            self.__progress.release()
-                            self.__progress_mutex.release()
-                        return
-            except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                notifcation+=1
-                time.sleep(1)
-            except(requests.exceptions.TooManyRedirects):
-                logging.warning("Redirects trap detected for {}, restarting download in 10 seconds".format(src))
-                time.sleep(10)
-                
-                if(notifcation % 10 == 0):
-                    logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
-                
-                logging.debug("Connection request unanswered, retrying -> URL: {url}, FNAME: {f}".format(url=src, f=fname))
+        r = downloader.head(session, (str(self.__timeout),), src, self.__http_codes, self.__timeout, 10)
+        
+        # Check if head request has failed
+        if isinstance(r, int):
+            logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
+            jutils.write_to_file(LOG_NAME, "{code} HEAD FAILURE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+            self.__failed_mutex.acquire()
+            self.__failed += 1
+            self.__failed_mutex.release()
+            if not display_bar:
+                self.__progress_mutex.acquire()
+                self.__progress.release()
+                self.__progress_mutex.release()
+            return
+        
         # Checking if file has a correct download format
         format = r.headers["content-type"]
         found = False
