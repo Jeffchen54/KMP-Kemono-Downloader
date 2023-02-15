@@ -723,27 +723,33 @@ class KMP:
             textLink: Set of links and their text in Files segment
             dir: Where to save the text and links to. Must be a .txt file
         """
-        frontOffset = 5
+        frontOffset = 4
         endOffset = 4
         currOffset = 0
         listSz = len(textLinks)
         strBuilder = []
-        # No work to be done if the file already exists
-        if os.path.exists(dir) or listSz <= 9:
-            return
+
         
+        # No work to be done if the file already exists
+        if os.path.exists(dir) or listSz < 9:
+            return
+
         # Record data
         for txtlink in textLinks:
+            text = txtlink.get('href').strip()
+            logging.info(text)
+            
             if frontOffset > 0:
                 frontOffset -= 1
             elif(endOffset < listSz - currOffset):
                 text = txtlink.get('href').strip()
+                logging.info(text)
                 if not text.isnumeric():
                     strBuilder.append(txtlink.text.strip() + '\n')
-                    strBuilder.append(text + '\n')
+                    strBuilder.append("HYPERLINK: " + text + '\n')
                     strBuilder.append("____________________________________________________________\n")
             currOffset += 1
-        
+            
         # Write to file if data exists
         if len(strBuilder) > 0:
             jutils.write_utf8("".join(strBuilder), dir, 'w')
@@ -861,6 +867,7 @@ class KMP:
         
         
         # Link type
+        logging.info(titleDir + work_name + "file__text.txt")
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
 
         # Scrape post content ######################################################
