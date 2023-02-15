@@ -737,13 +737,11 @@ class KMP:
         # Record data
         for txtlink in textLinks:
             text = txtlink.get('href').strip()
-            logging.info(text)
             
             if frontOffset > 0:
                 frontOffset -= 1
             elif(endOffset < listSz - currOffset):
                 text = txtlink.get('href').strip()
-                logging.info(text)
                 if not text.isnumeric():
                     strBuilder.append(txtlink.text.strip() + '\n')
                     strBuilder.append("HYPERLINK: " + text + '\n')
@@ -867,7 +865,6 @@ class KMP:
         
         
         # Link type
-        logging.info(titleDir + work_name + "file__text.txt")
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
 
         # Scrape post content ######################################################
