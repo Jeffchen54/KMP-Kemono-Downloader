@@ -15,7 +15,6 @@ import logging
 import requests.adapters
 from datetime import datetime, timezone
 from ssl import SSLError
-import mimetypes
 
 
 from Threadpool import tname
@@ -34,31 +33,23 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Improved error handling
-- HTTP retries no longer infinite by default
-- Post content with embedded containerlized elements like embedded GDrive files links are saved to file
-- Duplicate files with now have space in between filename and () to conform to windows standards
-- Duplicate file algorithm now takes into account locally available files
-- Duplicate file algorithm no longer overwrites local files 
-- Temporarily removed resume download when stopped due to HTTP errors, download now completely restarts
-- Fixed issue where program hangs up on random post attachments due to not being supported for download
-- Database is now backed up when database related switches are used 
-- Database updated to contain 2 new entries "artist" and "config", old databases are automatically updated
-    to this new format
-- Database is now updated at the end of program execution to lower locking issues 
-- Increased download thread ceiling to 5
-- HTTP code 502 added to HTTP retry list
-
-
+- Improved file preload performance significantly
+- Changed hashing algorithm which reduces collisions in file scanning use case significantly
+- Added reupdate feature, this will redownload everything from the update db
+- Added switch to use different db name
+- Added switch to change download format types
+- Added switch to ignore update entries with a nonexistant path
+- Slightly decreased memory usage for file preload (~9% decrease)
+- Now only scans text files created by the program.
 @author Jeff Chen
-@version 0.6.1
-@last modified 2/09/2023
+@version 0.6.1.1
+@last modified 2/15/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
-
+download_format_types = ["image", "audio", "video", "plain", "stream", "application", "7z", "audio"]
 class Error(Exception):
     """Base class for other exceptions"""
     pass
@@ -122,6 +113,7 @@ class KMP:
     __override_paths:list[str]           # List of file paths to override old file paths if they exists in db
     __config:tuple                      # Download configuration
     __artist:list[str]                  # Downloaded artist name
+    __reupdate:bool                     # True to reupdate, false to not
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
@@ -150,7 +142,7 @@ class KMP:
         tname.id = None
         if folder:
             self.__folder = folder
-        elif not update:
+        elif not update and not kwargs["reupdate"]:
             raise UnspecifiedDownloadPathException
         self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
@@ -189,7 +181,7 @@ class KMP:
         if not tcount or tcount <= 0:
             self.__tcount = 1
         else:
-            self.__tcount = min(5 , tcount)
+            self.__tcount = min(5, tcount)
             
         if wait < 0:
             self.__wait = 0.25
@@ -209,9 +201,9 @@ class KMP:
                 self.__ext_blacklist.hashtable_add(KVPair(ext, ext))
         else:
             self.__ext_blacklist = None
-        
+        self.__reupdate = kwargs["reupdate"]
         # Create database  #############
-        if track or update:
+        if track or update or kwargs["reupdate"]:
             # Check if database exists
             if os.path.exists(os.path.join("./", db_name)):
                 # If exists, create a backup
@@ -264,10 +256,10 @@ class KMP:
         
         # TODO choose better number
         logging.info("Please wait, scanning directory")
-        self.__existing_file_register = HashTable(1000000)
+        self.__existing_file_register = HashTable(10000000)
         self.__existing_file_register_lock = Lock()
         # If update is selected, read in all update paths
-        if update:
+        if update or kwargs["reupdate"]:
             # Use a set to skip ignore duplicate paths
             update_path_set = {item[0] for item in self.__db.execute("SELECT destination FROM Parent2").fetchall()}
             for path in update_path_set:
@@ -295,7 +287,11 @@ class KMP:
         Returns:
             HashTable: Hashtable with all file records if register is None
         """
-
+        # If path does not exists, skip
+        if not os.path.exists(dir):
+            logging.debug("{} does not exists, preload skipped".format(dir))
+            return None
+        
         # Pull up current directory information
         contents = os.scandir(dir)
         
@@ -318,7 +314,7 @@ class KMP:
     def __fregister_preload_helper(self, pool:ThreadPool, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
         Adds all files and their size to a hashtable
-
+        
         Args:
             path (str): Directory path to walk
             register (HashTable): If provided, appends to the hashtable
@@ -361,41 +357,43 @@ class KMP:
                     else:
                         fullpath = file.path 
                 
-                # Check if is text file
-                if(file.name.endswith("txt")):
+                # Check if is text file and is a file written by the program (contains __)
+                if(file.name.endswith("txt") and "__" in file.name):
                     # Add file contents to register
                     try:
-                        with open(file.path, 'r', encoding="utf-8") as fd:
+                        with open(file.path, 'r', encoding="utf-") as fd:
                             # Text content of file
                             contents = fd.read()
                             
-                            mutex.acquire()
+                            """Mutex actually isn't needed in this case, each thread scans its own directory
+                            As a result, no threads can actually conflict with each other""" 
                             data = fregister.hashtable_lookup_value(fullpath)
                             # If entry does not exists, add it               
                             if not data:
-                                fregister.hashtable_add(KVPair(fullpath, [contents]))
+                                mutex.acquire()
+                                fregister.hashtable_add(KVPair(fullpath, [hash(contents)]))
+                                mutex.release()
                             # Else append data to currently existing entry
                             else:
-                                data.append(contents)
+                                data.append(hash(contents))
                                 fregister.hashtable_edit_value(fullpath, data)
-                            mutex.release()
                     except(UnicodeDecodeError):
-                        logging.warning("UnicodeDecodeError in {}, removing file".format(file.path))
-                        os.remove(file.path)
+                        logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
+                        #os.remove(file.path)
                     except Exception as e:
                         logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
                 else:    
-                    mutex.acquire()
                     # Add size value to register
                     data = fregister.hashtable_lookup_value(fullpath)
                     # If entry does not exists, add it               
                     if not data:
+                        mutex.acquire()
                         fregister.hashtable_add(KVPair(fullpath, [fsize]))
+                        mutex.release()
                     # Else append data to currently existing entry
                     else:
                         data.append(fsize)
                         fregister.hashtable_edit_value(fullpath, data)
-                    mutex.release()
 
             # TODO sort values by radix sort and implement binary search
         
@@ -425,13 +423,16 @@ class KMP:
                 try:
                     for i in range(0, len(self.__urls)):
                         # Check if db entry already exists
-                        entry = self.__db.execute(("SELECT url FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                        entry = self.__db.execute(("SELECT * FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                        old_config = None
                         # If it already exists, remove the entry
                         if entry:
+                            # Save any old data 
+                            old_config = entry.fetchall()[0][5]
+                            # Remove old entry
                             self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
-
                         # Insert updated entry
-                        self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config)),))
+                        self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config) if not old_config else old_config),))
                     done = True
                 except sqlite3.OperationalError:
                     logging.warning(traceback.format_exc)
@@ -497,7 +498,7 @@ class KMP:
                         
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
-                        jutils.write_to_file(LOG_NAME, "{code} UNREGISTERED TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
+                        jutils.write_to_file(LOG_NAME, "{code} UNREGISTERED TIMEOUT AND NONKEMONO LINK -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
                         self.__failed_mutex.acquire()
                         self.__failed += 1
                         self.__failed_mutex.release()
@@ -517,6 +518,23 @@ class KMP:
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
                 
                 logging.debug("Connection request unanswered, retrying -> URL: {url}, FNAME: {f}".format(url=src, f=fname))
+        # Checking if file has a correct download format
+        format = r.headers["content-type"]
+        found = False
+        for f in download_format_types:
+            if f in format:
+                found = True
+                break
+        
+        if not found:
+            logging.info("{} has nontracked MIME type {}, skipping".format(src, format))
+            if not display_bar:
+                self.__progress_mutex.acquire()
+                self.__progress.release()
+                self.__progress_mutex.release()
+            return
+            
+        
         fullsize = r.headers.get('Content-Length')
 
         f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
@@ -978,7 +996,8 @@ class KMP:
                         # If it already exists, check if contents match
                         values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__content.txt")
                         # If contents match, is duplicates
-                        if post_contents in values:
+                        hashed = hash(post_contents)
+                        if hashed in values:
                             logging.debug("Post contents already exists")
                         # If not, write to file
                         else:
@@ -986,7 +1005,7 @@ class KMP:
                     
                     # If does not exists, add it and write to file
                     else:
-                        self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__content.txt", [post_contents]))
+                        self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__content.txt", [hash(post_contents)]))
                         writable = True
                     
                     self.__existing_file_register_lock.release()
@@ -1020,7 +1039,7 @@ class KMP:
                     logging.fatal("No href on {}".format(url))
                 download = attachment.get('href')
                 # Confirm that mime type of attachment is not html or None
-                if download and mimetypes.guess_extension(download) != None and 'html' not in mimetypes.guess_extension(download)[0]:
+                if download:
                     src = self.__CONTAINER_PREFIX + download
                     aname =  self.__trim_fname(attachment.text.strip())
                     # If src does not contain excluded keywords, download it
@@ -1052,7 +1071,8 @@ class KMP:
                             # If it already exists, check if contents match
                             values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__comments.txt")
                             # If contents match, is duplicates
-                            if text in values:
+                            hashed = hash(text)
+                            if hashed in values:
                                 logging.debug("Post comments already exists")
                             # If not, write to file
                             else:
@@ -1060,7 +1080,7 @@ class KMP:
                         
                         # If does not exists, add it and write to file
                         else:
-                            self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__comments.txt", [comments]))
+                            self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__comments.txt", [hash(comments)]))
                             writable = True
                         self.__existing_file_register_lock.release()
                 # Write to file
@@ -1089,6 +1109,7 @@ class KMP:
         if close:
             session.close()
         
+        logging.info("Finished scanning {}".format(url))
         return task_list
     
     def __exclusion_check(self, tokens:list[str], target:str)->bool:
@@ -1163,7 +1184,14 @@ class KMP:
         artist = soup.find("meta", attrs={'name': 'artist_name'})
         titleDir = (override_path if override_path else self.__folder) + re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           artist.get('content')) + "\\"
+        
+        # Check to see if artist dir exists
         if not os.path.isdir(titleDir):
+            # If updater is used, skip if dir does nto exists
+            if self.__update:
+                logging.warning("{} does not exists! Skipping {}".format(titleDir, artist.get('content')))
+                return task_list
+            # Otherwise, make the directory
             os.makedirs(titleDir)
         
         contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
@@ -1203,7 +1231,6 @@ class KMP:
                 contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
             else:
                 contLinks = None
-
         return task_list
 
 
@@ -1517,7 +1544,7 @@ class KMP:
         queue_list:list = []
         
         
-        if self.__update:
+        if self.__update or self.__reupdate:
             # Get all artists and their destinations from database
             rows = None
             while not rows:
@@ -1530,15 +1557,19 @@ class KMP:
             
             # Compile a list of urls, their download path, and latest url
             url = [row[0] for row in rows]
-            latest = [row[3] for row in rows]
+            latest = [row[3] for row in rows] if not self.__reupdate else [None] * len(url)
             path = [row[4] for row in rows]
             
+            assert(len(url) == len(latest))
+            assert(len(url) == len(path))
             
             # Add all new urls to the queue list
             scrape_pool = ThreadPool(self.__tcount)
             scrape_pool.start_threads()
             for i in range(0, len(url)):
+                logging.info("Fetching {url}".format(url=url[i]))
                 queue_list.append(self.__process_window(url[i], True, True, scrape_pool, latest[i], path[i]))
+                
             
             scrape_pool.join_queue()
             scrape_pool.kill_threads()
@@ -1629,7 +1660,7 @@ class KMP:
         # Generate threads #########################
         self.__threads = self.__create_threads(self.__tcount)
         
-        if self.__update:
+        if self.__update or self.__reupdate:
             # Get all artists and their destinations from database
             rows = None
             while not rows:
@@ -1642,14 +1673,14 @@ class KMP:
             
             # Compile a list of urls, their download path, and latest url
             url = [row[0] for row in rows]
-            latest = [row[3] for row in rows]
+            latest = [row[3] for row in rows] if not self.__reupdate else [None] * len(url)
             path = [row[4] for row in rows]
-            
             
             # Add all new urls to the queue list
             scrape_pool = ThreadPool(self.__tcount)
             scrape_pool.start_threads()
             for i in range(0, len(url)):
+                logging.info("Fetching {url}".format(url=url[i]))                
                 self.__process_window(url[i], True, False, scrape_pool, latest[i], path[i])
             
             scrape_pool.join_queue()
@@ -1698,10 +1729,12 @@ def help() -> None:
         -f --bulkfile <textfile.txt> : Bulk download from text file containing links\n\
         -d --downloadpath <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
         -c --chunksz <#> : Adjust download chunk size in bytes (Default is 64M)\n\
-        -t --threadct <#> : Change download thread count (default is 1, max is 3)\n\
+        -t --threadct <#> : Change download thread count (default is 1, max is 5)\n\
         -w --wait <#> : Delay between downloads in seconds (default is 0.25s)\n\
         -b --track : Track artists which can updated later, not supported for discord\n\
-        -a --predupe : Prepend () instead of postpending in duplicate file case")
+        -a --predupe : Prepend () instead of postpending in duplicate file case\n\
+        -g --updatedb <db_name.db>: Set db name to use for the update db (default is KMP.db)\n\
+        -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1710,7 +1743,7 @@ def help() -> None:
         -l --excludelink \"keyword1, keyword2,...\" : Keyword in excluded link, not case sensitive. Is for link plaintext, not its target\n\
         -o --omitcomment : Do not download any post comments\n\
         -m --omitcontent : Do not download any textual post contents\n\
-        -n --minsize : Minimum file size in bytes\n")
+        -n --minsize <min_size>: Minimum file size in bytes\n")
     
     logging.info("DOWNLOAD FILE STRUCTURE - How to organize downloads\n\
         -s --partialunpack : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files\n\
@@ -1719,7 +1752,8 @@ def help() -> None:
         -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
-        --UPDATE : Update all tracked artist works\n")
+        --UPDATE : Update all tracked artist works\n\
+        --REUPDATE : Redownload all tracked artist works\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
@@ -1760,6 +1794,7 @@ def main() -> None:
     exclcontents = False
     predupe = False
     minsize = 0
+    reupdate = False
     
     if len(sys.argv) > 1:
         pointer = 1
@@ -1796,6 +1831,10 @@ def main() -> None:
                 update = True
                 pointer += 1
                 logging.info("UPDATE -> " + str(update))
+            elif sys.argv[pointer] == '--REUPDATE':
+                reupdate = True
+                pointer += 1
+                logging.info("REUPDATE -> " + str(reupdate))
             elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
                 server_name = True
                 pointer += 1
@@ -1834,6 +1873,10 @@ def main() -> None:
                 wait = float(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
+            elif (sys.argv[pointer] == '-g' or sys.argv[pointer] == '--updatedb') and len(sys.argv) >= pointer:
+                db_name = sys.argv[pointer + 1]
+                pointer += 2
+                logging.info("UPDATE_DB_NAME -> " + db_name)
             elif (sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chunksz') and len(sys.argv) >= pointer:
                 chunksz = int(sys.argv[pointer + 1])
                 pointer += 2
@@ -1861,6 +1904,14 @@ def main() -> None:
                 pointer += 2
                 logging.info("POST_EXCLUDED -> " + str(post_excluded))
             
+            elif (sys.argv[pointer] == '-i' or sys.argv[pointer] == '--formats') and len(sys.argv) >= pointer:
+                formats = []
+                for ext in sys.argv[pointer + 1].split(','):
+                    formats.append(ext.strip().lower())
+                pointer += 2
+                global download_format_types
+                download_format_types = formats
+                logging.info("DOWNLOAD FORMATS -> " + str(download_format_types))
             elif (sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode') and len(sys.argv) >= pointer:
                 
                 for ext in sys.argv[pointer + 1].split(','):
@@ -1880,10 +1931,10 @@ def main() -> None:
         os.makedirs(LOG_PATH)
 
     # Run the downloader
-    if folder or update:
+    if folder or update or reupdate:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize, predupe=predupe)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate)
 
         if experimental or benchmark:
             if unpacked:

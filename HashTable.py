@@ -1,5 +1,6 @@
 from typing import List
 from typing import TypeVar, Generic
+import mmh3
 
 T = TypeVar('T')
 V = TypeVar('V')
@@ -254,6 +255,9 @@ class HashTable:
         while self.__records[curr] != None:
             if not self.__records[curr].isTombstone() and self.__records[curr].getKey() == searchKey:
                 return curr
+            
+            # Hashtable expansion is an extremely costly operation. 
+            # len / 4 is used to be more scalable with hash table size
             if step >= 10:
                 self.__doubleTable()
                 step = 1
@@ -387,29 +391,19 @@ class HashTable:
 
     def hash(self, s: str, m: int) -> int:
         """
-        Hashing algorithm using string folding. Adopted from
-        OpenDSA and translated to python 
+        Hashing algorithm using murmurhash3 32-bit unsigned int
 
         Params
             s: string to hash
             m: size of table 
         Return: home slot of s
+        # Edit 2023, fixed broken hash function
         """
-        intLength: int = int(len(s) / 4)
-        sum: int = 0
-
-        for j in range(0, intLength):
-            c = list(s[j * 4: (j * 4) + 4])
-            mult = 1
-            for k in range(0, len(c)):
-                sum += ord(c[k]) * mult
-                mult *= 256
-        index = intLength * 4
-        c = list(s[index:])
-        mult = 1
-
-        for k in range(0, len(c)):
-            sum += ord(c[k]) * mult
-            mult *= 256
-
-        return abs(sum % m)
+        #sum:int = 0
+        #mul:int = 1
+        
+        #for i in range(0, len(s)):
+        #    mul = 1 if (i % 4 == 0) else mul * 256
+        #    sum += ord(s[i]) * mul
+            
+        return mmh3.hash(s, signed=False) % m
