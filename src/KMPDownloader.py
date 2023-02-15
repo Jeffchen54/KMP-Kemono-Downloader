@@ -465,10 +465,9 @@ class KMP:
         
         logging.debug("Downloading " + fname + " from " + src)
         r = None
-        notifcation = 0
         
         # Grabbing content length  ###########################################################################################################
-        r = downloader.head(session, (str(self.__timeout),), src, self.__http_codes, self.__timeout, 10)
+        r = downloader.head(session, HEADERS, src, self.__http_codes, self.__timeout, 10)
         
         # Check if head request has failed
         if isinstance(r, int):
@@ -504,7 +503,7 @@ class KMP:
 
         f = fname.split('\\')[len(fname.split('\\')) - 1]   # File name only, used for bar display
 
-        # If file does not have a length, it is most likely an invalid file
+        # Check if file size exists, if it doesn't exists, it is an invalid file ############################################################
         if fullsize == None:
             logging.critical("Download was attempted on an undownloadable file, details describe\nSrc: " + src + "\nFname: " + fname)
             jutils.write_to_file(LOG_NAME, "UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
@@ -515,7 +514,7 @@ class KMP:
             # Convert fullsize
             fullsize = int(fullsize)
             
-            # Check to see if file exists in the file register
+            # Duplicate file check ########################################################################################################
             self.__existing_file_register_lock.acquire()
             
             if self.__existing_file_register.hashtable_exist_by_key(fname) == -1:
@@ -526,20 +525,16 @@ class KMP:
             values = self.__existing_file_register.hashtable_lookup_value(fname)
             
             
-            # Check if file name and size exists already
+            # Check if file name and size exists already, skip it
             if(fullsize in values):
                 # If file size already exists, skip it
                 logging.debug("{} (fsize={}) matches locally available file.".format(fname, fullsize))
                 self.__existing_file_register_lock.release()
+                
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
             elif fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
-                headers = HEADERS
-                mode = 'wb'
-                done = False
-                downloaded = 0          # Used for updating the bar
-                failed = False
                 
-                # Make a new file name according to number of matching fname entries
+                # Modify file name if name already taken  ######################################################################
                 download_fname = fname
                 
                 # Make sure that file does not already exists
@@ -561,95 +556,45 @@ class KMP:
                 self.__existing_file_register.hashtable_edit_value(download_fname, values)
                 self.__existing_file_register_lock.release()
                 
-                while(not done):
-                    try:
-                        # Get the session
-                        data = None
-                        while not data:
-                            try:
-                                data = session.get(src, stream=True, timeout=5, headers=headers)
-                                        
-                            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                                logging.error("Connection timeout on {url}".format(url=src))
-                                time.sleep(5)
-                                
-                        # Download the file with visual bars 
-                        if display_bar:
+                # Download file ################################################################################################
+                try:
+                    code  = downloader.download(session, HEADERS, src, download_fname, tname.name if display_bar else None, self.__http_codes, self.__timeout, self.__chunksz, 10)
+                    # If None is returned, download succeeded
+                    if not code:
+                        # Increment file download count, file is downloaded at this point
+                        self.__fcount_mutex.acquire()
+                        self.__fcount += 1
+                        self.__fcount_mutex.release()
+                        
+                        # Unzip file if specified
+                        if self.__unzip and zipextracter.supported_zip_type(download_fname):
+                            p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                                    download_fname.rpartition('\\')[2].rpartition('.')[0]) + "\\"
+                            self.__dir_lock.acquire()
+                            if not os.path.exists(p):
+                                os.mkdir(p)
+                            self.__dir_lock.release()
+                            zipextracter.extract_zip(download_fname, p, temp=True)
                             
-                            with open(download_fname, mode) as fd, tqdm(
-                                    desc=download_fname,
-                                    total=fullsize - downloaded,
-                                    unit='iB',
-                                    unit_scale=True,
-                                    leave=False,
-                                    bar_format= tname.name + ": (" + str(self.__threads.get_qsize()) + ")->" + f + '[{bar}{r_bar}]',
-                                    unit_divisor=int(1024)) as bar:
-                                for chunk in data.iter_content(chunk_size=self.__chunksz):
-                                    sz = fd.write(chunk)
-                                    fd.flush()
-                                    bar.update(sz)
-                                    downloaded += sz
-                                time.sleep(1)
-                                bar.clear()
-                        else:
-                            with open(download_fname, 'wb') as fd:
-                                
-                                try:
-                                    for chunk in data.iter_content(chunk_size=self.__chunksz):
-                                        sz = fd.write(chunk)
-                                        fd.flush()
-                                        downloaded += sz
-                                except(SSLError):
-                                    logging.error("SSL read error has occured on URL: {}".format(src))
-                                    jutils.write_to_file(LOG_NAME, "SSL read error -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=download_fname), LOG_MUTEX)
-                                    failed = True
-                                except(requests.ConnectionError):
-                                    logging.error("Connection error, retrying")
-                                    time.sleep(5)
-                                except(Exception) as e:
-                                    logging.error("Handled an unknown exception: {}".format(e.__class__.__name__))
-                                    jutils.write_to_file(LOG_NAME, "Unknown Exception {exc} -> SRC: {src}, FNAME: {fname}\n".format(exc=e.__class__.__name__, code=str(r.status_code), src=src, fname=download_fname), LOG_MUTEX)
-                                    failed = True
-                                
-                        # Checks if unrecoverable error as occured
-                        if failed:
-                            done = True
-                            self.__failed_mutex.acquire()
-                            self.__failed += 1
-                            self.__failed_mutex.release()
-                        # Checks if the file is correctly downloaded, if so, we are done
-                        elif(os.stat(download_fname).st_size == fullsize):
-                            done = True
-                            logging.debug("Downloaded Size (" + download_fname + ") -> " + str(fullsize))
-                            # Increment file download count, file is downloaded at this point
-                            self.__fcount_mutex.acquire()
-                            self.__fcount += 1
-                            self.__fcount_mutex.release()
+                    # Any other cases is a failure case
+                    else:
+                        if isinstance(code, int) and code in self.__http_codes:
+                            # If timeout code, report to log
+                            jutils.write_to_file(LOG_NAME, "HTTP TIMEOUT {} -> SRC: {}, FNAME: {}\n".format(code, src, fname), LOG_MUTEX)
+                        elif(isinstance(code, int)):
+                            # Nontimeout code, report to log
+                            jutils.write_to_file(LOG_NAME, "HTTP UNTRACKED {} -> SRC: {}, FNAME: {}\n".format(code, src, fname), LOG_MUTEX)
                             
-                            
-                        else:
-                            logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
-                            #headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
-                            #        'Range': 'bytes=' + str(downloaded) + '-' + str(fullsize)}
-                            #mode = 'ab'
-                    except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
-                        logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
-                        time.sleep(5)
-                    except FileNotFoundError:
-                        logging.debug("Cannot be downloaded, file likely a link, not a file ->" + download_fname)
-                        done = True
-
-
-
-                    # Unzip file if specified
-                    if self.__unzip and zipextracter.supported_zip_type(download_fname):
-                        p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                                download_fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
-                        self.__dir_lock.acquire()
-                        if not os.path.exists(p):
-                            os.mkdir(p)
-                        self.__dir_lock.release()
-                        zipextracter.extract_zip(download_fname, p, temp=True)
+                        self.__failed_mutex.acquire()
+                        self.__failed += 1
+                        self.__failed_mutex.release()
+                # Any exceptions that occur that aren't handled within downloader are failures
+                except SSLError as e:
+                    logging.error("{} has occured, skipping download".format(e.__class__.__name__))
+                    jutils.write_to_file(LOG_NAME, "SSLERROR -> SRC: {}, FNAME: {}\n".format(src, fname), LOG_MUTEX)
+                    self.__failed_mutex.acquire()
+                    self.__failed += 1
+                    self.__failed_mutex.release()
             else:
                 self.__existing_file_register_lock.release()
                     
@@ -761,7 +706,7 @@ class KMP:
                     fname = dir + base_name + self.__trim_fname(src)
                 else:
                     fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                    
+                
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname)))
                 else:
@@ -887,7 +832,7 @@ class KMP:
             titleDir = os.path.join(root, \
             work_name) + "\\"
             work_name = ""
-            
+                        
             # Check if directory has been registered ###################################
             self.__register_mutex.acquire()
             value = self.__register.hashtable_lookup_value(titleDir)
@@ -1009,7 +954,7 @@ class KMP:
                     aname =  self.__trim_fname(attachment.text.strip())
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
-                        fname = os.path.join(titleDir, work_name + aname)
+                        fname = os.path.join(titleDir,  aname)
                         
                         if task_list:
                             task_list.put((self.__download_file, (src, fname, False)))
