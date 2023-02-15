@@ -289,8 +289,9 @@ class KMP:
         """
         # If path does not exists, skip
         if not os.path.exists(dir):
-            logging.debug("{} does not exists, preload skipped".format(dir))
+            logging.warning("{} does not exists, preload skipped".format(dir))
             return None
+        
         
         # Pull up current directory information
         contents = os.scandir(dir)
@@ -1188,7 +1189,7 @@ class KMP:
         # Check to see if artist dir exists
         if not os.path.isdir(titleDir):
             # If updater is used, skip if dir does nto exists
-            if self.__update:
+            if self.__update or self.__reupdate:
                 logging.warning("{} does not exists! Skipping {}".format(titleDir, artist.get('content')))
                 return task_list
             # Otherwise, make the directory
