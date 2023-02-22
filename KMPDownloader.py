@@ -33,10 +33,10 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Hotfix for Kemono party url format update
+- Hotfix for --update switch
 @author Jeff Chen
-@version 0.6.1.2
-@last modified 2/21/2023
+@version 0.6.1.3
+@last modified 2/22/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -419,10 +419,11 @@ class KMP:
                         # Check if db entry already exists
                         entry = self.__db.execute(("SELECT * FROM Parent2 WHERE url = ?", (self.__urls[i],),))
                         old_config = None
+                        entries = entry.fetchall()
                         # If it already exists, remove the entry
-                        if entry:
+                        if len(entries) > 0:
                             # Save any old data 
-                            old_config = entry.fetchall()[0][5]
+                            old_config = entries[0][5]
                             # Remove old entry
                             self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
                         # Insert updated entry
