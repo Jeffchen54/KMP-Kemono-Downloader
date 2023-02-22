@@ -33,19 +33,12 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Improved file preload performance significantly
-- Changed hashing algorithm which reduces collisions in file scanning use case significantly
-- Added reupdate feature, this will redownload everything from the update db
-- Added switch to use different db name
-- Added switch to change download format types
-- Added switch to ignore update entries with a nonexistant path
-- Slightly decreased memory usage for file preload (~9% decrease)
-- Now only scans text files created by the program.
+- Hotfix for Kemono party url format update
 @author Jeff Chen
-@version 0.6.1.1
-@last modified 2/15/2023
+@version 0.6.1.2
+@last modified 2/21/2023
 """
-HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0'}
+HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
@@ -478,7 +471,7 @@ class KMP:
         # Grabbing content length  ###########################################################################################################
         while not r:
             try:
-                r = session.request('HEAD', src, timeout=5)
+                r = session.request('HEAD', src, timeout=10)
                 if r.status_code >= 400:
                     if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
@@ -603,7 +596,7 @@ class KMP:
                         data = None
                         while not data:
                             try:
-                                data = session.get(src, stream=True, timeout=5, headers=headers)
+                                data = session.get(src, stream=True, timeout=10, headers=headers)
                                         
                             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                                 logging.error("Connection timeout on {url}".format(url=src))
@@ -761,7 +754,8 @@ class KMP:
         Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
         Return modified tasklist, is None if task_list param is None
         """
-
+        
+        
         if not self.__threads.get_status():
             raise DeadThreadPoolException
         
@@ -772,7 +766,7 @@ class KMP:
             href = link.get('href')
             # Type 1 image - Image in Files section
             if href:
-                src = self.__CONTAINER_PREFIX + href
+                src = href if "http" in href  else self.__CONTAINER_PREFIX + href
             # Type 2 image - Image in Content section
             else:
                 target = link.get('src')
@@ -784,9 +778,10 @@ class KMP:
                         src = target
                     # Hosted on KMP server
                     else:
-                        src = self.__CONTAINER_PREFIX + target
+                        src = target if "http" in target else self.__CONTAINER_PREFIX + target
                 else:
                     src = None
+                    
             # If a src is detected, it is added to the download queue/task list    
             
             if src:
@@ -803,6 +798,7 @@ class KMP:
                 else:
                     task_list.put((self.__download_file, (src, fname, False)))
                 counter.toggle()
+        
         return task_list
 
     def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
@@ -883,7 +879,7 @@ class KMP:
         reqs = None
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=5, headers=HEADERS)
+                reqs = self.__session.get(url, timeout=10, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
                  time.sleep(5)
@@ -895,7 +891,7 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=5, headers=HEADERS)
+                    reqs = self.__session.get(url, timeout=10, headers=HEADERS)
                 except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                     logging.debug("Connection timeout")
                     time.sleep(5)
@@ -1041,7 +1037,7 @@ class KMP:
                 download = attachment.get('href')
                 # Confirm that mime type of attachment is not html or None
                 if download:
-                    src = self.__CONTAINER_PREFIX + download
+                    src = download if "http" in download else self.__CONTAINER_PREFIX + download
                     aname =  self.__trim_fname(attachment.text.strip())
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
@@ -1175,7 +1171,7 @@ class KMP:
         # Make a connection
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=5, headers=HEADERS)
+                reqs = self.__session.get(url, timeout=10, headers=HEADERS)
             except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                  logging.debug("Connection timeout")
                  time.sleep(5)
@@ -1202,7 +1198,7 @@ class KMP:
         # Update db if window is continuous
         if continuous and self.__db:
             self.__urls.append(url)
-            self.__latest_urls.append(self.__CONTAINER_PREFIX + contLinks[0]['href'] if len(contLinks) > 0 else None)
+            self.__latest_urls.append((contLinks[0]['href'] if "http" in contLinks[0]['href'] else self.__CONTAINER_PREFIX + contLinks[0]['href']) if len(contLinks) > 0 else None)
             self.__override_paths.append(override_path if override_path else self.__folder)
             self.__artist.append(artist.get('content'))
            
@@ -1212,18 +1208,20 @@ class KMP:
             for link in contLinks:
                 content = link['href']
                 
+                # Generate check url
+                checkurl = content if "http" in content else self.__CONTAINER_PREFIX + content
                 # If stop url is encounter, return from the function
-                if(self.__CONTAINER_PREFIX + content == stop_url):
+                if(checkurl == stop_url):
                     return task_list
                 
-                pool.enqueue((self.__process_container, (self.__CONTAINER_PREFIX + content, titleDir, task_list,)))
+                pool.enqueue((self.__process_container, (content if "http" in content else self.__CONTAINER_PREFIX + content, titleDir, task_list,)))
             if continuous:
                 # Move to next window
                 counter += 50       # Adjusted to 50 for the new site
                 reqs = None
                 while not reqs:
                     try:
-                        reqs = self.__session.get(url + suffix + str(counter), timeout=5, headers=HEADERS)
+                        reqs = self.__session.get(url + suffix + str(counter), timeout=10, headers=HEADERS)
                     except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                          logging.debug("Connection timeout")
                          time.sleep(5)
@@ -1296,7 +1294,7 @@ class KMP:
                 for i in js.get('attachments'):
                     if(i.get('path')):
                         if "https" != i.get('path')[0:5]:
-                            url = self.__CONTAINER_PREFIX + i.get('path')
+                            url = i.get('path') if "http" in i.get('path') else self.__CONTAINER_PREFIX + i.get('path')
                         else:
                             url = i.get('path')
                         stringBuilder.append(url + '\n\n')
@@ -1423,7 +1421,7 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=5, headers=HEADERS)
+                    reqs = self.__session.get(url, timeout=10, headers=HEADERS)
                 except(requests.exceptions.ConnectionError ,requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                      logging.debug("Connection timeout")
                      time.sleep(5)
