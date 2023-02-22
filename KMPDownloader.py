@@ -33,7 +33,7 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Hotfix for --update switch
+- Hotfix for --track switch
 @author Jeff Chen
 @version 0.6.1.3
 @last modified 2/22/2023
