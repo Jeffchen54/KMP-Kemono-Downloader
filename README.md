@@ -1,7 +1,6 @@
 # KMPDownloader
-Simple Kemono.party downloader
+Simple Kemono.party downloader with QOL features.
 
-Ran and built in Windows 10 with Visual Studios on Python 3.10 and 3.11
 Functionality not guaranteed until 1.0, There are known bugs!
 Can download everything from Files, save text and links in Content, and everything in Downloads. Can be set to automatically unzip files if they contain no password.
 
@@ -18,35 +17,16 @@ View changelog for more details on features not included here.
 - Queuing system, download multiple URLs without user input
 - Multhreading support, significant download speed bonus.
 - Ease of use, cookies are for eating only!  
-- Automatically artist work updates**.
+- Automatically artist work updates.
 
-**New feature which is still in development
 
 ## Instructions:
 **Need in depth details or want to view all features? Please visit the [wiki](https://github.com/Jeffchen54/KMP-Kemono-Downloader/wiki)!**
 
 Download Python >=3.10
 
-- Download all required dependencies
-
-    pip install requests
-    
-    pip install bs4
-    
-    pip install cfscrape 
-    
-    pip install tqdm
-    
-    pip install patool
-
-    pip install alive_progress
-
+- Run install_requirements.bat.
 - Install 7z and add it to your Window's Path. Line should be in the format "C:\Users\chenj\Downloads\7-Zip"
-- Copy and paste the files in patch for patoolib into your patoolib library. You can also grab the patched files from https://github.com/wummel/patool/pull/83/commits/c5282e30e1b3448081d74a0b8a86c7c9ecaaebbf. On my computer, the directory
-is "C:\Users\chenj\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\patoolib\programs".
-The directory to paste the files will contain files with the same name as what has been provided in the patch folder. This patches the issue where
-the program will hang when prompted with a password. You do not need to follow this step if you are not going to set automatic
-file unzipping or are not going to unzip password protected zip files.
-- Run in your favorite command line software
+- Run in your favorite command line software. Call "venv/Scripts/Activate" before running the program.
 - Read the command line arguments for instructions on how to run.
 - Enjoy!
