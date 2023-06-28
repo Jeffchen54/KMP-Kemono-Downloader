@@ -36,7 +36,10 @@ Using multithreading
 - TODO Logging by switch
 - TODO disable file preload
 - kemono URL prefix change
-- TODO Kemono URL prefix change adjustment to Update DB
+- UPDATE now ignores kemono url prefix and uses suffixes only when
+- TODO switch to append date to end of works
+- Switch to disable file prescan
+- Improved scanning files terminal output
 @author Jeff Chen
 @version 0.6.2
 @last modified 2/22/2023
@@ -113,7 +116,8 @@ class KMP:
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", **kwargs) -> None:
+        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
+        disableprescan:bool = False, **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -134,6 +138,7 @@ class KMP:
             update: Routines update instead of downloading artists
             predupe: True to prepend () in cases of dupe, false to postpend ()
             prefix: Prefix of kemono URL. Must include https and any other relevant parts of the URL and does not end in slash.
+            disableprescan: True to disable prescan used to build temp dupe file database.
             kwargs: not in use for now
         """
         tname.id = None
@@ -253,20 +258,22 @@ class KMP:
         self.__session.mount('http://', adapter)
         
         # TODO choose better number
-        logging.info("Please wait, scanning directory")
         self.__existing_file_register = HashTable(10000000)
         self.__existing_file_register_lock = Lock()
-        # If update is selected, read in all update paths
-        if update or kwargs["reupdate"]:
-            # Use a set to skip ignore duplicate paths
-            update_path_set = {item[0] for item in self.__db.execute("SELECT destination FROM Parent2").fetchall()}
-            for path in update_path_set:
-                self.__fregister_preload(path, self.__existing_file_register, self.__existing_file_register_lock)
+        
+        # File prescan
+        if not disableprescan:
+            # If update is selected, read in all update paths
+            if update or kwargs["reupdate"]:
+                # Use a set to skip ignore duplicate paths
+                update_path_set = {item[0] for item in self.__db.execute("SELECT destination FROM Parent2").fetchall()}
+                for path in update_path_set:
+                    self.__fregister_preload(path, self.__existing_file_register, self.__existing_file_register_lock)
 
-        # If update is not selected, read from download folder
-        else:
-            self.__fregister_preload(folder, self.__existing_file_register, self.__existing_file_register_lock)
-        logging.info("Finished scanning directory")
+            # If update is not selected, read from download folder
+            else:
+                self.__fregister_preload(folder, self.__existing_file_register, self.__existing_file_register_lock)
+            logging.info("Finished scanning directory")
         
         self.__predupe = predupe
         
@@ -286,6 +293,8 @@ class KMP:
             HashTable: Hashtable with all file records if register is None
         """
         # If path does not exists, skip
+        logging.info(f"Please wait, scanning {dir}")
+        
         if not os.path.exists(dir):
             logging.warning("{} does not exists, preload skipped".format(dir))
             return None
@@ -1560,9 +1569,11 @@ class KMP:
                     logging.warning("Database is locked, waiting 10s before trying again")
                     time.sleep(10)
             
-            # Compile a list of urls, their download path, and latest url
-            url = [row[0] for row in rows]
-            latest = [row[3] for row in rows] if not self.__reupdate else [None] * len(url)
+            
+            
+            # Compile a list of urls, their download path, and latest url while using custom prefix.
+            url = [self.__container_prefix + "/" + row[0][8:].partition("/")[2] for row in rows]
+            latest = [self.__container_prefix + "/" + row[3][8:].partition("/")[2] for row in rows] if not self.__reupdate else [None] * len(url)
             path = [row[4] for row in rows]
             
             assert(len(url) == len(latest))
@@ -1740,7 +1751,8 @@ def help() -> None:
         -a --predupe : Prepend () instead of postpending in duplicate file case\n\
         -g --updatedb <db_name.db>: Set db name to use for the update db (default is KMP.db)\n\
         -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n\
-        -j --prefix <url prefix>: Set prefix of kemono url. DOES NOT END IN \"\\\". Does not affect databases. default is \"https://kemono.party\".\n")
+        -j --prefix <url prefix>: Set prefix of kemono url. DOES NOT END IN \"\\\". Does not affect databases. default is \"https://kemono.party\".\n\
+        -k --disableprescan: Disables prescan used to catelog existing files\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1802,6 +1814,7 @@ def main() -> None:
     minsize = 0
     reupdate = False
     prefix = "https://kemono.party"
+    disableprescan = False
     
     if len(sys.argv) > 1:
         pointer = 1
@@ -1850,6 +1863,10 @@ def main() -> None:
                 predupe = True
                 pointer += 1
                 logging.info("PREDUPE -> " + str(predupe))          
+            elif sys.argv[pointer] == '-k' or sys.argv[pointer] == '--disableprescan':
+                disableprescan = True
+                pointer += 1
+                logging.info("PRESCAN -> " + str(disableprescan))       
             elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
                 unpacked = True
                 partial_unpack = False
