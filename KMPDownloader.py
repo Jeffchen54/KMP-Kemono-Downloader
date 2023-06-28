@@ -1767,7 +1767,8 @@ def help() -> None:
         -s --partialunpack : If a artist post is text only, do not create a dedicated directory for it, partially unpacks files\n\
         -u --unpacked : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
         -e --hashname : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord\n\
-        -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
+        -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n\
+        -q --logging <#> : Set logging level. 1 == info (default), 2 == debug, 3 == debug but print output to log.txt\n")
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
         --UPDATE : Update all tracked artist works. If an entry points to a nonexistant directory, the artist will be skipped.\n\
@@ -1786,7 +1787,7 @@ def main() -> None:
     """
     #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    #logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
     #logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
@@ -1893,6 +1894,19 @@ def main() -> None:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
+            elif (sys.argv[pointer] == '-q' or sys.argv[pointer] == '--logging') and len(sys.argv) >= pointer:
+                log_level =  int(sys.argv[pointer + 1])
+                match log_level:
+                    case 2:
+                        logging.basicConfig(level=logging.DEBUG)
+                        break
+                    case 3:
+                        logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
+                        break
+                    case _:
+                        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+                pointer += 2
+                logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
             elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
                 prefix = (sys.argv[pointer + 1])
                 pointer += 2
@@ -1962,7 +1976,7 @@ def main() -> None:
     if folder or update or reupdate:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan)
 
         if experimental or benchmark:
             if unpacked:
