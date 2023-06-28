@@ -33,9 +33,12 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Hotfix for --track switch
+- TODO Logging by switch
+- TODO disable file preload
+- kemono URL prefix change
+- TODO Kemono URL prefix change adjustment to Update DB
 @author Jeff Chen
-@version 0.6.1.3
+@version 0.6.2
 @last modified 2/22/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
@@ -76,7 +79,7 @@ class KMP:
     __session:requests.Session  # request session for main thread
     __unpacked:bool             # Unpacked download type flag
     __http_codes:list[int]      # list of HTTP codes to retry on
-    __CONTAINER_PREFIX = "https://kemono.party" # Prefix of kemono website
+    __container_prefix:str      # Prefix of kemono website
     __register:HashTable            # Registers a directory, combats multiple posts using the same name
     __register_mutex:Lock           # Lock for the register
     __fcount:int                    # Number of downloaded files
@@ -110,7 +113,7 @@ class KMP:
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
-        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, **kwargs) -> None:
+        link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -130,6 +133,7 @@ class KMP:
             track: true to add entries to database, false otherwise
             update: Routines update instead of downloading artists
             predupe: True to prepend () in cases of dupe, false to postpend ()
+            prefix: Prefix of kemono URL. Must include https and any other relevant parts of the URL and does not end in slash.
             kwargs: not in use for now
         """
         tname.id = None
@@ -161,6 +165,7 @@ class KMP:
         self.__override_paths = []         
         self.__config = locals() 
         self.__artist = []       
+        self.__container_prefix = prefix
         if minsize < 0:
             self.__minsize = 0
         else:
@@ -767,7 +772,7 @@ class KMP:
             href = link.get('href')
             # Type 1 image - Image in Files section
             if href:
-                src = href if "http" in href  else self.__CONTAINER_PREFIX + href
+                src = href if "http" in href  else self.__container_prefix + href
             # Type 2 image - Image in Content section
             else:
                 target = link.get('src')
@@ -779,7 +784,7 @@ class KMP:
                         src = target
                     # Hosted on KMP server
                     else:
-                        src = target if "http" in target else self.__CONTAINER_PREFIX + target
+                        src = target if "http" in target else self.__container_prefix + target
                 else:
                     src = None
                     
@@ -1038,7 +1043,7 @@ class KMP:
                 download = attachment.get('href')
                 # Confirm that mime type of attachment is not html or None
                 if download:
-                    src = download if "http" in download else self.__CONTAINER_PREFIX + download
+                    src = download if "http" in download else self.__container_prefix + download
                     aname =  self.__trim_fname(attachment.text.strip())
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
@@ -1199,7 +1204,7 @@ class KMP:
         # Update db if window is continuous
         if continuous and self.__db:
             self.__urls.append(url)
-            self.__latest_urls.append((contLinks[0]['href'] if "http" in contLinks[0]['href'] else self.__CONTAINER_PREFIX + contLinks[0]['href']) if len(contLinks) > 0 else None)
+            self.__latest_urls.append((contLinks[0]['href'] if "http" in contLinks[0]['href'] else self.__container_prefix + contLinks[0]['href']) if len(contLinks) > 0 else None)
             self.__override_paths.append(override_path if override_path else self.__folder)
             self.__artist.append(artist.get('content'))
            
@@ -1210,12 +1215,12 @@ class KMP:
                 content = link['href']
                 
                 # Generate check url
-                checkurl = content if "http" in content else self.__CONTAINER_PREFIX + content
+                checkurl = content if "http" in content else self.__container_prefix + content
                 # If stop url is encounter, return from the function
                 if(checkurl == stop_url):
                     return task_list
                 
-                pool.enqueue((self.__process_container, (content if "http" in content else self.__CONTAINER_PREFIX + content, titleDir, task_list,)))
+                pool.enqueue((self.__process_container, (content if "http" in content else self.__container_prefix + content, titleDir, task_list,)))
             if continuous:
                 # Move to next window
                 counter += 50       # Adjusted to 50 for the new site
@@ -1295,7 +1300,7 @@ class KMP:
                 for i in js.get('attachments'):
                     if(i.get('path')):
                         if "https" != i.get('path')[0:5]:
-                            url = i.get('path') if "http" in i.get('path') else self.__CONTAINER_PREFIX + i.get('path')
+                            url = i.get('path') if "http" in i.get('path') else self.__container_prefix + i.get('path')
                         else:
                             url = i.get('path')
                         stringBuilder.append(url + '\n\n')
@@ -1586,7 +1591,7 @@ class KMP:
 
             # User input url
             else:
-                while not url or "https://kemono.party" not in url:
+                while not url or self.__container_prefix not in url:
                     url = input("Input a url, or type 'quit' to exit> ")
 
                     if(url == 'quit'):
@@ -1697,7 +1702,7 @@ class KMP:
 
             # User input url
             else:
-                while not url or "https://kemono.party" not in url:
+                while not url or self.__container_prefix not in url:
                     url = input("Input a url, or type 'quit' to exit> ")
 
                     if(url == 'quit'):
@@ -1734,7 +1739,8 @@ def help() -> None:
         -b --track : Track artists which can updated later, not supported for discord\n\
         -a --predupe : Prepend () instead of postpending in duplicate file case\n\
         -g --updatedb <db_name.db>: Set db name to use for the update db (default is KMP.db)\n\
-        -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n")
+        -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n\
+        -j --prefix <url prefix>: Set prefix of kemono url. DOES NOT END IN \"\\\". Does not affect databases. default is \"https://kemono.party\".\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1752,7 +1758,7 @@ def help() -> None:
         -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n")
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
-        --UPDATE : Update all tracked artist works\n\
+        --UPDATE : Update all tracked artist works. If an entry points to a nonexistant directory, the artist will be skipped.\n\
         --REUPDATE : Redownload all tracked artist works\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
@@ -1795,6 +1801,7 @@ def main() -> None:
     predupe = False
     minsize = 0
     reupdate = False
+    prefix = "https://kemono.party"
     
     if len(sys.argv) > 1:
         pointer = 1
@@ -1869,6 +1876,10 @@ def main() -> None:
                 tcount = int(sys.argv[pointer + 1])
                 pointer += 2
                 logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
+            elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
+                prefix = (sys.argv[pointer + 1])
+                pointer += 2
+                logging.info("PREFIX -> " + prefix)
             elif (sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait') and len(sys.argv) >= pointer:
                 wait = float(sys.argv[pointer + 1])
                 pointer += 2
@@ -1934,7 +1945,7 @@ def main() -> None:
     if folder or update or reupdate:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix)
 
         if experimental or benchmark:
             if unpacked:
