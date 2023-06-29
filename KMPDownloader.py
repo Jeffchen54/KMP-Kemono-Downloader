@@ -1768,7 +1768,8 @@ def help() -> None:
         -u --unpacked : Enable unpacked file organization, all works will not have their own folder, overrides partial unpack\n\
         -e --hashname : Download server name instead of program defined naming scheme, may lead to issues if Kemono does not store links correctly. Not supported for Discord\n\
         -v --unzip : Enables unzipping of files automatically, requires 7z and setup to be done correctly\n\
-        -q --logging <#> : Set logging level. 1 == info (default), 2 == debug, 3 == debug but print output to log.txt\n")
+        -q --logging <#> : Set logging level. 1 == info (default), 2 == debug, 3 == debug but print output to debug_log.txt. Program will initially begin in level 1.\n\
+            Note that logging output is redirected to debug_log.txt for level 3 and opening the file while the program is running will crash the program.\n")
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
         --UPDATE : Update all tracked artist works. If an entry points to a nonexistant directory, the artist will be skipped.\n\
@@ -1785,11 +1786,9 @@ def main() -> None:
     """
     Program runner
     """
-    #logging.basicConfig(level=logging.DEBUG)
     start_time = time.monotonic()
-    #logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
-    #logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
     folder = False
     urls = False
     unzip = False
@@ -1898,15 +1897,12 @@ def main() -> None:
                 log_level =  int(sys.argv[pointer + 1])
                 match log_level:
                     case 2:
-                        logging.basicConfig(level=logging.DEBUG)
-                        break
+                        logging.basicConfig(level=9, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
                     case 3:
-                        logging.basicConfig(level=logging.DEBUG, filename='log.txt', filemode='w')
-                        break
+                        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', filename='debug_log.txt', filemode='w', force=True)
                     case _:
-                        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+                        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
                 pointer += 2
-                logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
             elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
                 prefix = (sys.argv[pointer + 1])
                 pointer += 2
