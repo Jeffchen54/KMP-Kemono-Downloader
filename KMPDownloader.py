@@ -571,7 +571,6 @@ class KMP:
             # Get file size of local matching file name files
             values = self.__existing_file_register.hashtable_lookup_value(fname)
             
-            
             # Check if file name and size exists already
             if(fullsize in values):
                 # If file size already exists, skip it
@@ -938,7 +937,7 @@ class KMP:
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
                 time_str = time_tag.text.strip().replace(':', '')
-                titleDir = os.path.join(root, work_name + " (" + time_str + ")") + "\\"
+                titleDir = os.path.join(root, work_name + " " + time_str + " ") + "\\"
             else:
                 titleDir = os.path.join(root, \
                 work_name) + "\\"
@@ -961,7 +960,7 @@ class KMP:
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
                 time_str = time_tag.text.strip().replace(':', '')
-                work_name += f' ({time_str}) - '
+                work_name += f' {time_str} - '
             else:
                 work_name += ' - '
 
