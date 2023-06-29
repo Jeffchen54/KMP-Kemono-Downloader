@@ -42,7 +42,7 @@ Using multithreading
 - Improved scanning files terminal output
 @author Jeff Chen
 @version 0.6.2
-@last modified 2/22/2023
+@last modified 6/28/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -1849,7 +1849,7 @@ def main() -> None:
                 date = True
                 pointer += 1
                 logging.info("APPEND DATE -> " + str(date))
-            elif sys.argv[pointer] == '--EXPERIMENTAL':
+            elif sys.argv[pointer] == '--DEPRECATED':
                 deprecated = True
                 pointer += 1
                 logging.info("DEPRECATED -> " + str(deprecated))
@@ -1892,7 +1892,7 @@ def main() -> None:
             elif sys.argv[pointer] == '-k' or sys.argv[pointer] == '--disableprescan':
                 disableprescan = True
                 pointer += 1
-                logging.info("PRESCAN -> " + str(disableprescan))       
+                logging.info("DISABLE PRESCAN -> " + str(disableprescan))       
             elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
                 unpacked = True
                 partial_unpack = False
