@@ -1,4 +1,6 @@
 # KMPDownloader
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/J3J3MQ3AB)
+<br>
 Simple Kemono.party downloader with QOL features.
 
 Functionality not guaranteed until 1.0, There are known bugs!
