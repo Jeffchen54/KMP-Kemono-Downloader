@@ -33,16 +33,10 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Logging by switch
-- Disable file preload
-- kemono URL prefix change
-- UPDATE now ignores kemono url prefix and uses suffixes only when
-- switch to append date to end of works
-- Switch to disable file prescan
-- Improved scanning files terminal output
+- Hotfix for directory file name bug with --date switch
 @author Jeff Chen
-@version 0.6.2
-@last modified 6/28/2023
+@version 0.6.2.1
+@last modified 7/03/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -937,7 +931,7 @@ class KMP:
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
                 time_str = time_tag.text.strip().replace(':', '')
-                titleDir = os.path.join(root, work_name + " " + time_str + " ") + "\\"
+                titleDir = os.path.join(root, work_name + " " + time_str) + "\\"
             else:
                 titleDir = os.path.join(root, \
                 work_name) + "\\"
