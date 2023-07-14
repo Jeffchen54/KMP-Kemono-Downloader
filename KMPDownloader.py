@@ -108,11 +108,12 @@ class KMP:
     __artist:list[str]                  # Downloaded artist name
     __reupdate:bool                     # True to reupdate, false to not
     __date:bool                         # True to append date to files/folder, false to not
+    __id:bool                           # True to prepend id to files/folder, false to not
     
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
-        disableprescan:bool = False, date:bool = False, **kwargs) -> None:
+        disableprescan:bool = False, date:bool = False, id:bool = False, **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -134,6 +135,8 @@ class KMP:
             predupe: True to prepend () in cases of dupe, false to postpend ()
             prefix: Prefix of kemono URL. Must include https and any other relevant parts of the URL and does not end in slash.
             disableprescan: True to disable prescan used to build temp dupe file database.
+            date: True to append date to files/folder, false to not
+            id: True to prepend id to files/folder, false to not
             kwargs: not in use for now
         """
         tname.id = None
@@ -167,6 +170,7 @@ class KMP:
         self.__artist = []       
         self.__container_prefix = prefix
         self.__date = date
+        self.__id = id
         if minsize < 0:
             self.__minsize = 0
         else:
@@ -933,10 +937,19 @@ class KMP:
                 time_str = time_tag.text.strip().replace(':', '')
                 titleDir = os.path.join(root, work_name + " " + time_str) + "\\"
             else:
-                titleDir = os.path.join(root, \
-                work_name) + "\\"
+                time_str = None
             
-            work_name= ""
+            if self.__id:
+                id_str = url.rpartition("/")[2]
+            else:
+                id_str = None
+                
+            
+            titleDir = os.path.join(root, \
+            ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "")) + "\\"
+            
+            if not self.__id or not self.__date:
+                work_name = ""
             
             # Check if directory has been registered ###################################
             self.__register_mutex.acquire()
@@ -954,9 +967,15 @@ class KMP:
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
                 time_str = time_tag.text.strip().replace(':', '')
-                work_name += f' {time_str} - '
             else:
-                work_name += ' - '
+                time_str = None
+                
+            if self.__id:
+                id_str = url.rpartition("/")[2]
+            else:
+                id_str = None
+            
+            work_name = ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "") + " - "
 
 
         # Create directory if not registered
@@ -1763,7 +1782,8 @@ def help() -> None:
         -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n\
         -j --prefix <url prefix>: Set prefix of kemono url. DOES NOT END IN \"\\\". Does not affect databases. default is \"https://kemono.party\".\n\
         -k --disableprescan: Disables prescan used to catelog existing files. Disabling reduces dupe file check accuracy in exchange for lower memory usage and lowered run time.\n\
-        -w --date: Append date to file and/or folder names.\n")
+        -w --date: Append date to file and/or folder names.\n\
+        --id : Prepend post id to file and/or folder names\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1827,6 +1847,7 @@ def main() -> None:
     prefix = "https://kemono.party"
     disableprescan = False
     date = False
+    id = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
@@ -1842,6 +1863,10 @@ def main() -> None:
                 date = True
                 pointer += 1
                 logging.info("APPEND DATE -> " + str(date))
+            elif sys.argv[pointer] == '--id':
+                id = True
+                pointer += 1
+                logging.info("PREPEND ID -> " + str(date))
             elif sys.argv[pointer] == '--DEPRECATED':
                 deprecated = True
                 pointer += 1
@@ -1991,7 +2016,7 @@ def main() -> None:
     if folder or update or reupdate:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date, id=id)
 
         if not deprecated or benchmark:
             if unpacked:
