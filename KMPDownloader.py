@@ -2006,6 +2006,7 @@ def main() -> None:
                     logging.info("PARTIAL_UNPACK -> " + str(partial_unpack))
                     pointer += 1
             else:
+                logging.error(f"{sys.argv[pointer]} is not a valid configuration!")
                 pointer = len(sys.argv)
 
     # Prelim dirs
