@@ -96,7 +96,7 @@ class KMP:
     __db:DB                             # Name of database
     __update:bool                       # True for update mode, false for download mode
     __exclcomments:bool                 # Exclude comments switch
-    __exclcontents:bool                 # Exclude contents switch
+    __exclcontents:bool                 # Exclude contents switch 
     __minsize:bool                      # Minimum downloadable file size
     __existing_file_register:HashTable  # Existing files and their size
     __existing_file_register_lock:Lock  # Lock for existing file table
@@ -108,11 +108,12 @@ class KMP:
     __artist:list[str]                  # Downloaded artist name
     __reupdate:bool                     # True to reupdate, false to not
     __date:bool                         # True to append date to files/folder, false to not
-    
+    __id:bool                           # True to prepend id to files/folder, false to not
+    __rename:bool                      # True to rename tracked artist files (nothing is downloaded), false for regular operation.
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
-        disableprescan:bool = False, date:bool = False, **kwargs) -> None:
+        disableprescan:bool = False, date:bool = False, id:bool = False, rename:bool = False, **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -201,6 +202,7 @@ class KMP:
         else:
             self.__ext_blacklist = None
         self.__reupdate = kwargs["reupdate"]
+        self.__rename = rename
         # Create database  #############
         if track or update or kwargs["reupdate"]:
             # Check if database exists
@@ -305,7 +307,6 @@ class KMP:
                     
         # Iterate through all elements
         for file in contents:
-            
             # If is a directory, recursive call into directory and append result
             if file.is_dir():
                 file_pool.enqueue((self.__fregister_preload_helper, (file_pool, file.path + '\\', fregister, mutex,)))
@@ -315,6 +316,7 @@ class KMP:
         file_pool.join_queue()
         file_pool.kill_threads()
         
+   
     def __fregister_preload_helper(self, pool:ThreadPool, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
         Adds all files and their size to a hashtable
@@ -329,7 +331,6 @@ class KMP:
 
         # Pull up current directory information
         contents = os.scandir(dir)
-        
         # Iterate through all elements
         for file in contents:
             
@@ -341,6 +342,7 @@ class KMP:
                 # Get file size
                 fsize = os.stat(file.path).st_size
                 
+                # Following process attempts to restore found files to their original file names
                 # Remove (...) if it exists
                 # Predupe case
                 if file.name[0] == "(":
@@ -361,6 +363,17 @@ class KMP:
                     else:
                         fullpath = file.path 
                 
+                fullpath_org = fullpath.rpartition("\\")[2].split(" ")        
+                if len(fullpath_org) >= 3:  # Skips files with inadequent tokens
+                    # Date case
+                    if fullpath_org[len(fullpath_org) - 3].isnumeric():
+                        fullpath = (fullpath.rpartition("\\")[0] + "\\" + " ".join(fullpath_org[0:len(fullpath_org) - 4]) + " " +  " ".join(fullpath_org[len(fullpath_org) - 2:]))
+                    
+                    # ID Case
+                    fullpath_org = fullpath.rpartition("\\")[2].split(" ")
+                    if fullpath_org[0].isnumeric() and not fullpath_org[1].isnumeric(): # This is the only case it is certain that num in beginning is not part of file name
+                        fullpath = (fullpath.rpartition("\\")[0] + "\\" + " ".join(fullpath_org[1:]))
+                
                 # Check if is text file and is a file written by the program (contains __)
                 if(file.name.endswith("txt") and "__" in file.name):
                     # Add file contents to register
@@ -369,18 +382,23 @@ class KMP:
                             # Text content of file
                             contents = fd.read()
                             
+                            # Remove id and date from text file if it exists
+                            
                             """Mutex actually isn't needed in this case, each thread scans its own directory
                             As a result, no threads can actually conflict with each other""" 
+                            mutex.acquire()
                             data = fregister.hashtable_lookup_value(fullpath)
                             # If entry does not exists, add it               
                             if not data:
-                                mutex.acquire()
-                                fregister.hashtable_add(KVPair(fullpath, [hash(contents)]))
-                                mutex.release()
-                            # Else append data to currently existing entry
-                            else:
+                                
+                                fregister.hashtable_add(KVPair(fullpath, [hash(contents), file.path]))
+                                
+                            # Else append data to currently existing entry if not already included in the entry
+                            elif(file.path not in data):
                                 data.append(hash(contents))
+                                data.append(file.path)
                                 fregister.hashtable_edit_value(fullpath, data)
+                            mutex.release()
                     except(UnicodeDecodeError):
                         logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
                         #os.remove(file.path)
@@ -390,15 +408,15 @@ class KMP:
                     # Add size value to register
                     data = fregister.hashtable_lookup_value(fullpath)
                     # If entry does not exists, add it               
+                    mutex.acquire()
                     if not data:
-                        mutex.acquire()
-                        fregister.hashtable_add(KVPair(fullpath, [fsize]))
-                        mutex.release()
+                        fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
                     # Else append data to currently existing entry
-                    else:
+                    elif(file.path not in data):
                         data.append(fsize)
+                        data.append(file.path)
                         fregister.hashtable_edit_value(fullpath, data)
-
+                    mutex.release()
             # TODO sort values by radix sort and implement binary search
         
     def reset(self) -> None:
@@ -447,15 +465,17 @@ class KMP:
             self.__db.commit()
             self.__db.close()
 
-    def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
+    def __download_file(self, src: str, fname: str, org_fname: str, display_bar:bool = True) -> None:
         """
         Downloads file at src. Skips if 
             (1) a file already exists sharing the same fname and size 
             (2) Contains blacklisted extensions
             (3) File's name and size matches a locally downloaded file
+        However, if self.__rename is true, file will be renamed according to self's vars if src file matches a local copy
         Param:
             src: src of image to download
             fname: what to name the file to download, with extensions. Absolute path
+            org_fname: fname but the base version of it. Used for file name collision checks.
             display_bar: Whether to display download progress bar or not. If False, display bar is not displayed and self.__progress 
                     is incremented instead.
         Pre: If program is called with a thread, it will use a unique session, if called by main, it will use a newly
@@ -523,6 +543,7 @@ class KMP:
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
                 
                 logging.debug("Connection request unanswered, retrying -> URL: {url}, FNAME: {f}".format(url=src, f=fname))
+        
         # Checking if file has a correct download format
         format = r.headers["content-type"]
         found = False
@@ -558,20 +579,65 @@ class KMP:
             # Check to see if file exists in the file register
             self.__existing_file_register_lock.acquire()
             
-            if self.__existing_file_register.hashtable_exist_by_key(fname) == -1:
+            if self.__existing_file_register.hashtable_exist_by_key(org_fname) == -1:
                 # If does not exists, add an entry
-                self.__existing_file_register.hashtable_add(KVPair(fname, []))
+                self.__existing_file_register.hashtable_add(KVPair(org_fname, []))
             
             # Get file size of local matching file name files
-            values = self.__existing_file_register.hashtable_lookup_value(fname)
+            values = self.__existing_file_register.hashtable_lookup_value(org_fname)
             
-            # Check if file name and size exists already
-            if(fullsize in values):
-                # If file size already exists, skip it
-                logging.debug("{} (fsize={}) matches locally available file.".format(fname, fullsize))
-                self.__existing_file_register_lock.release()
+            download = False
+            # Check 3 conditions when renaming
+            if values and self.__rename:
+                try:
+                    # (1) Local file with same name and same size
+                    index = values.index(fullsize)
+                    values_copy = values # Markoff list for values
+                    try:
+                        # Since case can occur multiple times, run until exception
+                        while True:
+                            # Rename local file with same size to rename target name
+                            try:
+                                # Only rename if name differs
+                                if values[index + 1] != fname:
+                                    os.rename(values[index + 1], fname)
+                                    logging.info("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
+                                    values[index + 1] = fname
+                                values_copy[index + 1] = None
+                                values_copy[index] = None
+                            except FileExistsError:
+                                # If local file does not match rename target name but is the same size, remove local file
+                                if fname != values[index + 1] and os.path.getsize(values[index + 1]) == fullsize:
+                                    logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
+                                    os.remove(values[index + 1])
+                                    values = values[0:index] + values[index + 1:]
+                                    values_copy = values_copy[0:index] + values_copy[index + 1:]
+                                # If local file matches rename target name, mark it off
+                                elif values[index + 1] == org_fname:
+                                    logging.info("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
+                                    values_copy[index + 1] = None
+                                    values[index] = None
+                            # If a file is being downloaded while renaming is ongoing, skip and markoff 
+                            except (PermissionError, FileNotFoundError):
+                                values_copy[index + 1] = None
+                                values_copy[index] = None
+                            
+                            
+                            # Prepare for next iteration
+                            index = values_copy.index(fullsize)
+                    # At end of first case, update hash table
+                    except ValueError:
+                        self.__existing_file_register.hashtable_edit_value(org_fname, values)
+                    
+                except ValueError:
+                    # (2) Local file with same name but different size. Let the download part handle it
+                    download = True             
+            # (3) No local file with same base name exists
+            else:
+                download = True
+                
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
-            elif fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
+            if download and fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
                 headers = HEADERS
                 mode = 'wb'
                 done = False
@@ -597,7 +663,8 @@ class KMP:
                     
                 # Add file size to hash table
                 values.append(fullsize)
-                self.__existing_file_register.hashtable_edit_value(download_fname, values)
+                values.append(download_fname)
+                self.__existing_file_register.hashtable_edit_value(org_fname, values)
                 self.__existing_file_register_lock.release()
                 
                 while(not done):
@@ -690,6 +757,7 @@ class KMP:
                         self.__dir_lock.release()
                         zipextracter.extract_zip(download_fname, p, temp=True)
             else:
+                pass
                 self.__existing_file_register_lock.release()
                     
         
@@ -749,7 +817,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, task_list:Queue|None, counter:PersistentCounter) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, org_base_name:str | None, task_list:Queue|None, counter:PersistentCounter) -> Queue:
         """
         Puts all urls in imgLinks in threadpool download queue. If task_list is not None, then
         all urls will be added to task_list instead of being added to download queue.
@@ -760,6 +828,7 @@ class KMP:
         base_name: Prefix to name files, None for just a counter
         task_list: list to store tasks into instead of directly processing them, None to directly process them
         counter: a counter to increment for each file and used to rename files
+        org_base_name: base name without any additions
         
         Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
         Return modified tasklist, is None if task_list param is None
@@ -772,6 +841,10 @@ class KMP:
         if not base_name:
             base_name = ""
 
+        if not org_base_name:
+            org_base_name = ""
+        
+        
         for link in imgLinks:
             href = link.get('href')
             # Type 1 image - Image in Files section
@@ -800,18 +873,21 @@ class KMP:
                 # Select the correct download name based on switch
                 if self.__download_server_name_type:
                     fname = dir + base_name + self.__trim_fname(src)
+                    org_fname = fname
+                    
                 else:
                     fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                    
+                    org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                                    
                 if not task_list:
-                    self.__threads.enqueue((self.__download_file, (src, fname)))
+                    self.__threads.enqueue((self.__download_file, (src, fname, org_fname)))
                 else:
-                    task_list.put((self.__download_file, (src, fname, False)))
+                    task_list.put((self.__download_file, (src, fname, org_fname, False)))
                 counter.toggle()
         
         return task_list
 
-    def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
+    def __download_file_text(self, textLinks:ResultSet, dir:str, base_dir:str) -> None:
         """
         Scrapes all text and their links in textLink and saves it to 
         in dir
@@ -819,6 +895,7 @@ class KMP:
         Param:
             textLink: Set of links and their text in Files segment
             dir: Where to save the text and links to. Must be a .txt file
+            base_dir: dir without any additions
         """
         frontOffset = 5
         endOffset = 4
@@ -826,7 +903,8 @@ class KMP:
         listSz = len(textLinks)
         strBuilder = []
         # No work to be done if the file already exists
-        if os.path.exists(dir) or listSz <= 9:
+        if os.path.exists(base_dir) or listSz <= 9:
+            logging.debug(f"File already exists, skipping: {dir}")
             return
         
         # Record data
@@ -913,6 +991,7 @@ class KMP:
         work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
              ).split("\\")[0]
         backup = work_name + " - "
+        org_work_name = ""
         
         # Check if a post is excluded
         for keyword in self.__post_name_exclusion:
@@ -953,10 +1032,23 @@ class KMP:
             
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
-                time_str = time_tag.text.strip().replace(':', '')
-                work_name += f' {time_str} - '
+                
+                # If is gumroad, time tag can be none
+                if time_tag:
+                    time_str = time_tag.text.strip().replace(':', '')
+                else:
+                    time_str = None
+                
             else:
-                work_name += ' - '
+                time_str = None
+                
+            if self.__id:
+                id_str = url.rpartition("/")[2]
+            else:
+                id_str = None
+            
+            org_work_name = work_name + " - "
+            work_name = ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "") + " - "
 
 
         # Create directory if not registered
@@ -967,12 +1059,11 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        
-        self.__queue_download_files(imgLinks, titleDir, work_name, task_list, counter)
+        self.__queue_download_files(imgLinks, titleDir, work_name, org_work_name, task_list, counter)
         
         
         # Link type
-        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
+        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt", titleDir + org_work_name + "file__text.txt")
 
         # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")
@@ -1012,25 +1103,60 @@ class KMP:
                                 prev = container.contents[0]
                         
                     self.__existing_file_register_lock.acquire()
-                    # Check to see if post__content already exists
-                    if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__content.txt") > 0):
-                        # If it already exists, check if contents match
-                        values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__content.txt")
-                        # If contents match, is duplicates
-                        hashed = hash(post_contents)
-                        if hashed in values:
-                            logging.debug("Post contents already exists")
-                        # If not, write to file
-                        else:
-                            writable = True
-                    
+                    hashed = hash(post_contents)
+                    values = self.__existing_file_register.hashtable_lookup_value(titleDir + org_work_name + "post__content.txt")
+                    # Check 3 conditions when renaming
+                    if values and self.__rename:
+                        try:
+                            # (1) Local file with same name and same size
+                            index = values.index(hashed)
+                            values_copy = values # Markoff list for values
+                            try:
+                                # Since case can occur multiple times, run until exception
+                                while True:
+                                    # Rename local file with same size to rename target name
+                                    try:
+                                        if values[index + 1] != (titleDir + work_name + "post__content.txt"):
+                                            os.rename(values[index + 1], titleDir + work_name + "post__content.txt")
+                                            logging.info("Base name already exists: {}, Renaming local file {} to {}".format(titleDir + org_work_name + "post__content.txt", values[index + 1], titleDir + work_name + "post__content.txt"))
+                                        values[index + 1] = titleDir + work_name + "post__content.txt"
+                                        values_copy[index + 1] = None
+                                        values_copy[index] = None
+                                    except FileExistsError:
+                                        with open(values[index + 1], 'r',  encoding="utf-") as fd:
+                                            txt = fd.read()
+                                        # If local file does not match rename target name but is the same size, remove local file
+                                        if titleDir + work_name + "post__content.txt" != values[index + 1] and hash(txt) == hashed:
+                                            logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(titleDir + org_work_name + "post__content.txt", titleDir + work_name + "post__content.txt", values[index + 1]))
+                                            os.remove(values[index + 1])
+                                            values = values[0:index] + values[index + 1:]
+                                            values_copy = values_copy[0:index] + values_copy[index + 1:]
+                                        # If local file matches rename target name, mark it off
+                                        elif values[index + 1] == titleDir + work_name + "post__content.txt":
+                                            logging.info("Base name already exists: {} in local file {}".format(titleDir + org_work_name + "post__content.txt", values[index + 1]))
+                                            values_copy[index + 1] = None
+                                            values[index] = None
+                                    except (PermissionError, FileNotFoundError):
+                                        values_copy[index + 1] = None
+                                        values_copy[index] = None
+                                    # Prepare for next iteration
+                                    index = values_copy.index(hashed)
+                            # At end of first case, update hash table
+                            except ValueError:
+                                self.__existing_file_register.hashtable_edit_value(titleDir + org_work_name + "post__content.txt", values)
+                                writable = False
+                            
+                        except ValueError:
+                            # (2) Local file with same name but different size. Let the download part handle it
+                            writable = True             
+                        # In cases where file does not exist but is in the register (when scanning a dir multiple times), skip 
+                        except FileNotFoundError:
+                            logging.info("\n\n\nATTENTION\n\n\n")
                     # If does not exists, add it and write to file
-                    else:
-                        self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__content.txt", [hash(post_contents)]))
+                    elif not values:
+                        self.__existing_file_register.hashtable_add(KVPair( titleDir + org_work_name + "post__content.txt", [hashed, titleDir + work_name + "post__content.txt"]))
                         writable = True
-                    
                     self.__existing_file_register_lock.release()
-                    
                     # Write to file
                     if(writable):
                         contents_file =  titleDir + work_name + "post__content.txt"
@@ -1046,11 +1172,12 @@ class KMP:
                                 contents_file = titleDir + work_name + "post__content" + " (" + str(i) + ").txt"
                             i += 1
                         jutils.write_utf8(post_contents, contents_file, 'w')
-                                
+                    
+                    
                                     
                 
                 # Image Section
-                task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
+                task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, org_work_name, task_list, counter)
 
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
@@ -1066,11 +1193,12 @@ class KMP:
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
                         fname = os.path.join(titleDir, work_name + aname)
+                        oname = os.path.join(titleDir, org_work_name + aname)
                         
                         if task_list:
-                            task_list.put((self.__download_file, (src, fname, False)))
+                            task_list.put((self.__download_file, (src, fname, oname, False)))
                         else:
-                            self.__threads.enqueue((self.__download_file, (src, fname)))
+                            self.__threads.enqueue((self.__download_file, (src, fname, oname)))
         
 
 
@@ -1087,21 +1215,61 @@ class KMP:
                     if(text and text != "No comments found for this post." and len(text) > 0):
                         
                         self.__existing_file_register_lock.acquire()
-                        # Check if post comments already exists in the work directory
-                        if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__comments.txt") > 0):
-                            # If it already exists, check if contents match
-                            values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__comments.txt")
-                            # If contents match, is duplicates
-                            hashed = hash(text)
-                            if hashed in values:
-                                logging.debug("Post comments already exists")
-                            # If not, write to file
-                            else:
-                                writable = True
+                        hashed = hash(text)
+                        values = self.__existing_file_register.hashtable_lookup_value(titleDir + org_work_name + "post__comments.txt")
+                        # Check 3 conditions when renaming
+                        if values and self.__rename:
+                            try:
+                                # (1) Local file with same name and same size
+                                index = values.index(hashed)
+                                values_copy = values # Markoff list for values
+                                try:
+                                    # Since case can occur multiple times, run until exception
+                                    while True:
+                                        # Rename local file with same size to rename target name
+                                        try:
+                                            if values[index + 1] != (titleDir + work_name + "post__comments.txt"):
+                                                os.rename(values[index + 1], titleDir + work_name + "post__comments.txt")
+                                                logging.info("Base name already exists: {}, Renaming local file {} to {}".format(titleDir + org_work_name + "post__comments.txt", values[index + 1], titleDir + work_name + "post__comments.txt"))
+                                            values[index + 1] = titleDir + work_name + "post__comments.txt"
+                                            values_copy[index + 1] = None
+                                            values_copy[index] = None
+                                        except FileExistsError:
+                                            with open(values[index + 1], 'r',  encoding="utf-") as fd:
+                                                txt = fd.read()
+                                            # If local file does not match rename target name but is the same size, remove local file
+                                            if titleDir + work_name + "post__comments.txt" != values[index + 1] and hash(txt) == hashed:
+                                                logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(titleDir + org_work_name + "post__comments.txt", titleDir + work_name + "post__comments.txt", values[index + 1]))
+                                                os.remove(values[index + 1])
+                                                values = values[0:index] + values[index + 1:]
+                                                values_copy = values_copy[0:index] + values_copy[index + 1:]
+                                            # If local file matches rename target name, mark it off
+                                            elif values[index + 1] == titleDir + work_name + "post__comments.txt":
+                                                logging.info("Base name already exists: {} in local file {}".format(titleDir + org_work_name + "post__comments.txt", values[index + 1]))
+                                                values_copy[index + 1] = None
+                                                values[index] = None
+                                        except (PermissionError, FileNotFoundError):
+                                            values_copy[index + 1] = None
+                                            values_copy[index] = None
+                                        
+                                        # Prepare for next iteration
+                                        index = values_copy.index(hashed)
+                                # At end of first case, update hash table
+                                except ValueError:
+                                    self.__existing_file_register.hashtable_edit_value(titleDir + org_work_name + "post__comments.txt", values)
+                                    writable = False
+                                # In cases where file does not exist but is in the register (when scanning a dir multiple times), skip 
+                                # Also, note that multiple threads may be working on the register at the same time, a thread can read and delete a file while another thread has only read in an item which should not be possible due to mutex
+                                except FileNotFoundError:
+                                    logging.info("\n\n\nATTENTION\n\n\n")
+                                
+                            except ValueError:
+                                # (2) Local file with same name but different size. Let the download part handle it
+                                writable = True             
                         
                         # If does not exists, add it and write to file
-                        else:
-                            self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__comments.txt", [hash(comments)]))
+                        elif not values:
+                            self.__existing_file_register.hashtable_add(KVPair( titleDir + org_work_name + "post__comments.txt", [hashed, titleDir + work_name + "post__comments.txt"]))
                             writable = True
                         self.__existing_file_register_lock.release()
                 # Write to file
@@ -1120,7 +1288,6 @@ class KMP:
                         i += 1
                     jutils.write_utf8(text, comments_file, 'w')
                     
-                
             
         # Add to post process queue if partial unpack is on
         if self.__unpacked == 1:
@@ -1326,9 +1493,9 @@ class KMP:
                         
                         # Download the attachment
                         if get_list:
-                            task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], False)))
+                            task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], str(counter) + '.' + url.rpartition('.')[2], False)))
                         else:
-                            self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
+                            self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], str(counter) + '.' + url.rpartition('.')[2])))
                         counter += 1
                         # If is on the register, do not download the attachment
 
@@ -1784,7 +1951,8 @@ def help() -> None:
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
         --UPDATE : Update all tracked artist works. If an entry points to a nonexistant directory, the artist will be skipped.\n\
-        --REUPDATE : Redownload all tracked artist works\n")
+        --REUPDATE : Redownload all tracked artist works\n\
+        --RENAME : Rename existing files instead of skipping them with current switch config.\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
@@ -1827,160 +1995,175 @@ def main() -> None:
     prefix = "https://kemono.party"
     disableprescan = False
     date = False
+    id = False
+    rename = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
-            if (sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile') and len(sys.argv) >= pointer:
-                with open(sys.argv[pointer + 1], "r") as fd:
-                    urls = fd.readlines()
-                pointer += 2
-            elif sys.argv[pointer] == '-v' or sys.argv[pointer] == '--unzip':
-                unzip = True
-                pointer += 1
-                logging.info("UNZIP -> " + str(unzip))
-            elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--date':
-                date = True
-                pointer += 1
-                logging.info("APPEND DATE -> " + str(date))
-            elif sys.argv[pointer] == '--DEPRECATED':
-                deprecated = True
-                pointer += 1
-                logging.info("DEPRECATED -> " + str(deprecated))
-            elif sys.argv[pointer] == '-b' or sys.argv[pointer] == '--track':
-                track = True
-                pointer += 1
-                logging.info("TRACK -> " + str(track))
-            elif sys.argv[pointer] == '-o' or sys.argv[pointer] == '--omitcomment':
-                exclcomments = True
-                pointer += 1
-                logging.info("OMITCOMMENTS -> " + str(exclcomments))
-            elif sys.argv[pointer] == '-m' or sys.argv[pointer] == '--omitcontent':
-                exclcontents = True
-                pointer += 1 
-                logging.info("OMITPOSTCONTENT -> " + str(exclcontents))
-            elif (sys.argv[pointer] == '-n' or sys.argv[pointer] == '--minsize') and len(sys.argv) >= pointer:
-                minsize = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("MINFILESIZE -> " + str(minsize))
-            elif sys.argv[pointer] == '--UPDATE':
-                update = True
-                pointer += 1
-                logging.info("UPDATE -> " + str(update))
-            elif sys.argv[pointer] == '--REUPDATE':
-                reupdate = True
-                pointer += 1
-                logging.info("REUPDATE -> " + str(reupdate))
-            elif sys.argv[pointer] == '--REUPDATE':
-                reupdate = True
-                pointer += 1
-                logging.info("REUPDATE -> " + str(reupdate))
-            elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
-                server_name = True
-                pointer += 1
-                logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))          
-            elif sys.argv[pointer] == '-a' or sys.argv[pointer] == '--predupe':
-                predupe = True
-                pointer += 1
-                logging.info("PREDUPE -> " + str(predupe))          
-            elif sys.argv[pointer] == '-k' or sys.argv[pointer] == '--disableprescan':
-                disableprescan = True
-                pointer += 1
-                logging.info("DISABLE PRESCAN -> " + str(disableprescan))       
-            elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
-                unpacked = True
-                partial_unpack = False
-                pointer += 1
-                logging.info("UNPACKED -> " + str(unpacked))
-            elif sys.argv[pointer] == '--BENCHMARK':
-                benchmark = True
-                pointer += 1
-                logging.info("BENCHMARK -> TRUE")
-            elif (sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath') and len(sys.argv) >= pointer:
-                folder = os.path.abspath(sys.argv[pointer + 1])
-
-                if folder[len(folder) - 1] == '\"':
-                    folder = folder[:len(folder) - 1] + '\\'
-                elif not folder[len(folder) - 1] == '\\':
-                    folder += '\\'
-
-                logging.info("FOLDER -> " + folder)
-                if not os.path.exists(folder):
-                    logging.critical("FOLDER Path does not exist, terminating program!!!")
-                    return
-                pointer += 2
-            elif (sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct') and len(sys.argv) >= pointer:
-                tcount = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
-            elif (sys.argv[pointer] == '-q' or sys.argv[pointer] == '--logging') and len(sys.argv) >= pointer:
-                log_level =  int(sys.argv[pointer + 1])
-                match log_level:
-                    case 2:
-                        logging.basicConfig(level=9, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
-                    case 3:
-                        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', filename='debug_log.txt', filemode='w', force=True)
-                    case _:
-                        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
-                pointer += 2
-            elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
-                prefix = (sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("PREFIX -> " + prefix)
-            elif (sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait') and len(sys.argv) >= pointer:
-                wait = float(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
-            elif (sys.argv[pointer] == '-g' or sys.argv[pointer] == '--updatedb') and len(sys.argv) >= pointer:
-                db_name = sys.argv[pointer + 1]
-                pointer += 2
-                logging.info("UPDATE_DB_NAME -> " + db_name)
-            elif (sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chunksz') and len(sys.argv) >= pointer:
-                chunksz = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("CHUNKSZ -> " + str(chunksz))
-            elif (sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries') and len(sys.argv) >= pointer:
-                retries = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("RETRIES -> " + str(retries))
-            elif (sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile') and len(sys.argv) >= pointer:
-                 
-                for ext in sys.argv[pointer + 1].split(','):
-                    excluded.append(ext.strip().lower())
-                pointer += 2
-                logging.info("EXT_EXCLUDED -> " + str(excluded))
-            elif (sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink') and len(sys.argv) >= pointer:
-                 
-                for ext in sys.argv[pointer + 1].split(','):
-                    link_excluded.append(ext.strip().lower())
-                pointer += 2
-                logging.info("LINK_EXCLUDED -> " + str(link_excluded))
-            elif (sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost') and len(sys.argv) >= pointer:
-                 
-                for ext in sys.argv[pointer + 1].split(','):
-                    post_excluded.append(ext.strip().lower())
-                pointer += 2
-                logging.info("POST_EXCLUDED -> " + str(post_excluded))
-            
-            elif (sys.argv[pointer] == '-i' or sys.argv[pointer] == '--formats') and len(sys.argv) >= pointer:
-                formats = []
-                for ext in sys.argv[pointer + 1].split(','):
-                    formats.append(ext.strip().lower())
-                pointer += 2
-                global download_format_types
-                download_format_types = formats
-                logging.info("DOWNLOAD FORMATS -> " + str(download_format_types))
-            elif (sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode') and len(sys.argv) >= pointer:
-                
-                for ext in sys.argv[pointer + 1].split(','):
-                    http_codes.append(int(ext.strip()))
-                pointer += 2
-                logging.info("HTTP CODES -> " + str(http_codes))
-            elif sys.argv[pointer] == '-s' or sys.argv[pointer] == '--partialunpack':
-                if not unpacked:
-                    partial_unpack = True
-                    logging.info("PARTIAL_UNPACK -> " + str(partial_unpack))
+            try:
+                if (sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile') and len(sys.argv) >= pointer:
+                    with open(sys.argv[pointer + 1], "r") as fd:
+                        urls = fd.readlines()
+                    pointer += 2
+                elif sys.argv[pointer] == '-v' or sys.argv[pointer] == '--unzip':
+                    unzip = True
                     pointer += 1
-            else:
+                    logging.info("UNZIP -> " + str(unzip))
+                elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--date':
+                    date = True
+                    pointer += 1
+                    logging.info("APPEND DATE -> " + str(date))
+                elif sys.argv[pointer] == '--id':
+                    id = True
+                    pointer += 1
+                    logging.info("PREPEND ID -> " + str(id))
+                elif sys.argv[pointer] == '--DEPRECATED':
+                    deprecated = True
+                    pointer += 1
+                    logging.info("DEPRECATED -> " + str(deprecated))
+                elif sys.argv[pointer] == '-b' or sys.argv[pointer] == '--track':
+                    track = True
+                    pointer += 1
+                    logging.info("TRACK -> " + str(track))
+                elif sys.argv[pointer] == '-o' or sys.argv[pointer] == '--omitcomment':
+                    exclcomments = True
+                    pointer += 1
+                    logging.info("OMITCOMMENTS -> " + str(exclcomments))
+                elif sys.argv[pointer] == '-m' or sys.argv[pointer] == '--omitcontent':
+                    exclcontents = True
+                    pointer += 1 
+                    logging.info("OMITPOSTCONTENT -> " + str(exclcontents))
+                elif (sys.argv[pointer] == '-n' or sys.argv[pointer] == '--minsize') and len(sys.argv) >= pointer:
+                    minsize = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("MINFILESIZE -> " + str(minsize))
+                elif sys.argv[pointer] == '--UPDATE':
+                    update = True
+                    pointer += 1
+                    logging.info("UPDATE -> " + str(update))
+                elif sys.argv[pointer] == '--RENAME':
+                    rename = True
+                    pointer += 1
+                    logging.info("UPDATE -> " + str(update))
+                elif sys.argv[pointer] == '--REUPDATE':
+                    reupdate = True
+                    pointer += 1
+                    logging.info("REUPDATE -> " + str(reupdate))
+                elif sys.argv[pointer] == '--REUPDATE':
+                    reupdate = True
+                    pointer += 1
+                    logging.info("REUPDATE -> " + str(reupdate))
+                elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
+                    server_name = True
+                    pointer += 1
+                    logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))          
+                elif sys.argv[pointer] == '-a' or sys.argv[pointer] == '--predupe':
+                    predupe = True
+                    pointer += 1
+                    logging.info("PREDUPE -> " + str(predupe))          
+                elif sys.argv[pointer] == '-k' or sys.argv[pointer] == '--disableprescan':
+                    disableprescan = True
+                    pointer += 1
+                    logging.info("DISABLE PRESCAN -> " + str(disableprescan))       
+                elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
+                    unpacked = True
+                    partial_unpack = False
+                    pointer += 1
+                    logging.info("UNPACKED -> " + str(unpacked))
+                elif sys.argv[pointer] == '--BENCHMARK':
+                    benchmark = True
+                    pointer += 1
+                    logging.info("BENCHMARK -> TRUE")
+                elif (sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath') and len(sys.argv) >= pointer:
+                    folder = os.path.abspath(sys.argv[pointer + 1])
+
+                    if folder[len(folder) - 1] == '\"':
+                        folder = folder[:len(folder) - 1] + '\\'
+                    elif not folder[len(folder) - 1] == '\\':
+                        folder += '\\'
+
+                    logging.info("FOLDER -> " + folder)
+                    if not os.path.exists(folder):
+                        logging.critical("FOLDER Path does not exist, terminating program!!!")
+                        return
+                    pointer += 2
+                elif (sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct') and len(sys.argv) >= pointer:
+                    tcount = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
+                elif (sys.argv[pointer] == '-q' or sys.argv[pointer] == '--logging') and len(sys.argv) >= pointer:
+                    log_level =  int(sys.argv[pointer + 1])
+                    match log_level:
+                        case 2:
+                            logging.basicConfig(level=9, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
+                        case 3:
+                            logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', filename='debug_log.txt', filemode='w', force=True)
+                        case _:
+                            logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
+                    pointer += 2
+                elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
+                    prefix = (sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("PREFIX -> " + prefix)
+                elif (sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait') and len(sys.argv) >= pointer:
+                    wait = float(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
+                elif (sys.argv[pointer] == '-g' or sys.argv[pointer] == '--updatedb') and len(sys.argv) >= pointer:
+                    db_name = sys.argv[pointer + 1]
+                    pointer += 2
+                    logging.info("UPDATE_DB_NAME -> " + db_name)
+                elif (sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chunksz') and len(sys.argv) >= pointer:
+                    chunksz = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("CHUNKSZ -> " + str(chunksz))
+                elif (sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries') and len(sys.argv) >= pointer:
+                    retries = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("RETRIES -> " + str(retries))
+                elif (sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        excluded.append(ext.strip().lower())
+                    pointer += 2
+                    logging.info("EXT_EXCLUDED -> " + str(excluded))
+                elif (sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        link_excluded.append(ext.strip().lower())
+                    pointer += 2
+                    logging.info("LINK_EXCLUDED -> " + str(link_excluded))
+                elif (sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        post_excluded.append(ext.strip().lower())
+                    pointer += 2
+                    logging.info("POST_EXCLUDED -> " + str(post_excluded))
+                
+                elif (sys.argv[pointer] == '-i' or sys.argv[pointer] == '--formats') and len(sys.argv) >= pointer:
+                    formats = []
+                    for ext in sys.argv[pointer + 1].split(','):
+                        formats.append(ext.strip().lower())
+                    pointer += 2
+                    global download_format_types
+                    download_format_types = formats
+                    logging.info("DOWNLOAD FORMATS -> " + str(download_format_types))
+                elif (sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        http_codes.append(int(ext.strip()))
+                    pointer += 2
+                    logging.info("HTTP CODES -> " + str(http_codes))
+                elif sys.argv[pointer] == '-s' or sys.argv[pointer] == '--partialunpack':
+                    if not unpacked:
+                        partial_unpack = True
+                        logging.info("PARTIAL_UNPACK -> " + str(partial_unpack))
+                        pointer += 1
+                else:
+                    logging.error(f"{sys.argv[pointer]} is not a valid configuration!")
+                    exit(0)
+            except IndexError:
+                logging.error(f"Missing argument for {sys.argv[pointer]}")
                 pointer = len(sys.argv)
 
     # Prelim dirs
@@ -1991,7 +2174,7 @@ def main() -> None:
     if folder or update or reupdate:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date, id=id, rename=rename)
 
         if not deprecated or benchmark:
             if unpacked:
