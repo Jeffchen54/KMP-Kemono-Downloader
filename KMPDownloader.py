@@ -1009,8 +1009,15 @@ class KMP:
             
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
-                time_str = time_tag.text.strip().replace(':', '')
-                titleDir = os.path.join(root, work_name + " " + time_str) + "\\"
+                
+                # If is gumroad, time tag can be none
+                if time_tag:
+                    time_str = time_tag.text.strip().replace(':', '')
+                    titleDir = os.path.join(root, work_name + " " + time_str) + "\\"
+                else:
+                        titleDir = os.path.join(root, \
+                    work_name) + "\\"
+
             else:
                 titleDir = os.path.join(root, \
                 work_name) + "\\"
