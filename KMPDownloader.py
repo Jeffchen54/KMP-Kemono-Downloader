@@ -467,7 +467,7 @@ class KMP:
         if not tname.name:
             tname.name = "default thread name" 
             session = cfscrape.create_scraper(requests.Session())
-            session.max_redirects = 5
+            session.max_redirects = 0
             adapter = requests.adapters.HTTPAdapter(pool_connections=self.__tcount, pool_maxsize=self.__tcount, max_retries=0, pool_block=True)
             session.mount('http://', adapter)
             close = True 
@@ -483,6 +483,7 @@ class KMP:
         while not r:
             try:
                 r = session.request('HEAD', src, timeout=10)
+                
                 if r.status_code >= 400:
                     if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
@@ -513,14 +514,25 @@ class KMP:
                             self.__progress_mutex.release()
                         return
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                if(notifcation == 10):
+                    logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/ and {url}, skipping download".format(url=src, f=fname))
+                    logging.info(notifcation)
+                    jutils.write_to_file(LOG_NAME, "Misc Error has occured, please check https://status.kemono.party/ and {src} -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
+                    self.__failed_mutex.acquire()
+                    self.__failed += 1
+                    self.__failed_mutex.release()
+                    if not display_bar:
+                        self.__progress_mutex.acquire()
+                        self.__progress.release()
+                        self.__progress_mutex.release()
+                    return
                 notifcation+=1
                 time.sleep(1)
             except(requests.exceptions.TooManyRedirects):
                 logging.warning("Redirects trap detected for {}, restarting download in 10 seconds".format(src))
                 time.sleep(10)
                 
-                if(notifcation % 10 == 0):
-                    logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
+
                 
                 logging.debug("Connection request unanswered, retrying -> URL: {url}, FNAME: {f}".format(url=src, f=fname))
         # Checking if file has a correct download format
