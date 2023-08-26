@@ -1023,17 +1023,22 @@ class KMP:
                     
                     if containers:
                         for container in containers:  
+                            
                             # Ignore empty containers
                             if len(container.contents) > 0:
                                                           
                                 # check if the current container is nested within the previous one
-                                if not prev or (prev and container.contents[0] not in prev):
-                                    # if not, write to file
-                                    post_contents += ("\n" + "Embedded Container: {}".format(container.contents[0]))
-                                
-                                # update prev
-                                prev = container.contents[0]
-                        
+                                try:
+                                    logging.info(container.contents[0])
+                                    if not prev or (prev and str(container.contents[0]) not in str(prev)):
+                                        # if not, write to file
+                                        post_contents += ("\n" + "Embedded Container: {}".format(container.contents[0]))
+                                    
+                                    # update prev
+                                    prev = container.contents[0]
+                                except:
+                                    logging.info(f"Critical failure on {url}")
+                                    exit(-1)
                     self.__existing_file_register_lock.acquire()
                     # Check to see if post__content already exists
                     if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__content.txt") > 0):
