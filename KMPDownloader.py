@@ -108,11 +108,11 @@ class KMP:
     __artist:list[str]                  # Downloaded artist name
     __reupdate:bool                     # True to reupdate, false to not
     __date:bool                         # True to append date to files/folder, false to not
-    
+    __tempextr:bool                     # True to extract to temp folder then move to dir, false to extract within dir only
 
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
-        disableprescan:bool = False, date:bool = False, **kwargs) -> None:
+        disableprescan:bool = False, date:bool = False, tempextr:bool = True, **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -167,6 +167,7 @@ class KMP:
         self.__artist = []       
         self.__container_prefix = prefix
         self.__date = date
+        self.__tempextr = tempextr
         if minsize < 0:
             self.__minsize = 0
         else:
@@ -695,12 +696,12 @@ class KMP:
                     # Unzip file if specified
                     if self.__unzip and zipextracter.supported_zip_type(download_fname):
                         p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                                download_fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
+                                                download_fname.rpartition('\\')[2]).rpartition(" by")[0].strip() + "\\"
                         self.__dir_lock.acquire()
                         if not os.path.exists(p):
                             os.mkdir(p)
                         self.__dir_lock.release()
-                        zipextracter.extract_zip(download_fname, p, temp=True)
+                        zipextracter.extract_zip(download_fname, p, temp=self.__tempextr)
             else:
                 self.__existing_file_register_lock.release()
                     
