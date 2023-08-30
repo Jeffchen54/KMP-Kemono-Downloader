@@ -111,10 +111,11 @@ class KMP:
     __id:bool                           # True to prepend id to files/folder, false to not
     __rename:bool                      # True to rename tracked artist files (nothing is downloaded), false for regular operation.
     __tempextr:bool                     # True to extract to temp folder then move to dir, false to extract within dir only
+    __root:str                          # Root directory
      
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
-        disableprescan:bool = False, date:bool = False, id:bool = False, rename:bool = False, tempextr:bool = False, **kwargs) -> None:
+        disableprescan:bool = False, date:bool = False, id:bool = False, rename:bool = False, tempextr:bool = True, root:str = os.path.dirname(os.path.realpath(__file__)), **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -138,6 +139,7 @@ class KMP:
             disableprescan: True to disable prescan used to build temp dupe file database.
             kwargs: not in use for now
         """
+        self.__root = root
         tname.id = None
         if folder:
             self.__folder = folder
@@ -158,7 +160,7 @@ class KMP:
         self.__download_server_name_type = download_server_name_type
         self.__link_name_exclusion = link_name_exclusion
         self.__register_mutex = Lock()
-        self.__db = DB(db_name)
+        self.__db = DB(os.path.join(root, db_name))
         self.__update = update
         self.__exclcomments = exclcomments
         self.__exclcontents = exclcontents
@@ -170,6 +172,7 @@ class KMP:
         self.__container_prefix = prefix
         self.__date = date
         self.__tempextr = tempextr
+        self.__id = id
         if minsize < 0:
             self.__minsize = 0
         else:
@@ -208,13 +211,13 @@ class KMP:
         # Create database  #############
         if track or update or kwargs["reupdate"]:
             # Check if database exists
-            if os.path.exists(os.path.join("./", db_name)):
+            if os.path.exists(os.path.join(self.__root, db_name)):
                 # If exists, create a backup
-                if(not os.path.exists(os.path.join("./", "Data_Backup"))):
-                    os.makedirs(os.path.join("./", "Data_Backup"))
+                if(not os.path.exists(os.path.join(self.__root, "Data_Backup"))):
+                    os.makedirs(os.path.join(self.__root, "Data_Backup"))
                 # Copy db file to backup location
                 db_part_name = db_name.rpartition('.')
-                shutil.copyfile(os.path.join("./", db_name), os.path.join("./", "Data_Backup/", db_part_name[0] + "-" + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') + "." + db_part_name[2])) 
+                shutil.copyfile(os.path.join(self.__root, db_name), os.path.join(self.__root, "Data_Backup/", db_part_name[0] + "-" + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') + "." + db_part_name[2])) 
                 
             
             # Create a new table
@@ -734,7 +737,19 @@ class KMP:
                             self.__fcount += 1
                             self.__fcount_mutex.release()
                             
-                            
+                            # Unzip file if specified
+                            if self.__unzip and zipextracter.supported_zip_type(download_fname):
+                                p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                                        download_fname.rpartition('\\')[2]).rpartition(" by")[0].strip() + "\\"
+                                self.__dir_lock.acquire()
+                                if not os.path.exists(p):
+                                    os.mkdir(p)
+                                self.__dir_lock.release()
+                                if not zipextracter.extract_zip(download_fname, p, temp=self.__tempextr):
+                                    jutils.write_to_file(LOG_NAME, "Extraction Failure -> FILE: {fname}\n".format(fname=download_fname), LOG_MUTEX)
+                                    self.__failed_mutex.acquire()
+                                    self.__failed += 1
+                                    self.__failed_mutex.release()
                         else:
                             logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
                             #headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
@@ -749,15 +764,7 @@ class KMP:
 
 
 
-                    # Unzip file if specified
-                    if self.__unzip and zipextracter.supported_zip_type(download_fname):
-                        p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                                download_fname.rpartition('\\')[2]).rpartition(" by")[0].strip() + "\\"
-                        self.__dir_lock.acquire()
-                        if not os.path.exists(p):
-                            os.mkdir(p)
-                        self.__dir_lock.release()
-                        zipextracter.extract_zip(download_fname, p, temp=self.__tempextr)
+                    
             else:
                 pass
                 self.__existing_file_register_lock.release()
@@ -1976,7 +1983,6 @@ def main() -> None:
     """
     start_time = time.monotonic()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
-
     folder = False
     urls = False
     unzip = False
@@ -2173,7 +2179,7 @@ def main() -> None:
                     exit(0)
             except IndexError:
                 logging.error(f"Missing argument for {sys.argv[pointer]}")
-                pointer = len(sys.argv)
+                exit(0)
 
     # Prelim dirs
     if not os.path.exists(LOG_PATH):
