@@ -112,6 +112,8 @@ class KMP:
     __rename:bool                      # True to rename tracked artist files (nothing is downloaded), false for regular operation.
     __tempextr:bool                     # True to extract to temp folder then move to dir, false to extract within dir only
     __root:str                          # Root directory
+    __scount:int                        # Number of files skipped
+    __scount_mutex:Lock                 # lock for scount
      
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
@@ -145,6 +147,8 @@ class KMP:
             self.__folder = folder
         elif not update and not kwargs["reupdate"]:
             raise UnspecifiedDownloadPathException
+        self.__scount = 0
+        self.__scount_mutex = Lock()
         self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
         self.__progress = Semaphore(value=0)
@@ -470,6 +474,42 @@ class KMP:
             self.__db.commit()
             self.__db.close()
 
+    def __submit_failure(self, msg:str|None) -> None:
+        """
+        Called when a file related failure occurs
+        
+        Param:
+            msg: Message to write to LOG_NAME, skip step if None
+        """
+        jutils.write_to_file(LOG_NAME, msg, LOG_MUTEX) if msg else None
+        self.__failed_mutex.acquire()
+        self.__failed += 1
+        self.__failed_mutex.release()
+    
+    def __submit_progress(self) -> None:
+        """
+        Called when progress is made on files
+        """
+        self.__progress_mutex.acquire()
+        self.__progress.release()
+        self.__progress_mutex.release()
+    
+    def __submit_downloaded(self) -> None:
+        """
+        Called when a file is successfully downloaded
+        """
+        self.__fcount_mutex.acquire()
+        self.__fcount += 1
+        self.__fcount_mutex.release()
+    
+    def __submit_skipped(self)->None:
+        """
+        Called when a file download is skipped
+        """
+        self.__scount_mutex.acquire()
+        self.__scount += 1
+        self.__scount_mutex.release()
+        
     def __download_file(self, src: str, fname: str, org_fname: str, display_bar:bool = True) -> None:
         """
         Downloads file at src. Skips if 
@@ -512,14 +552,9 @@ class KMP:
                     if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
                             logging.critical("Reached maximum timeout, writing error to log")
-                            jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
-                            self.__failed_mutex.acquire()
-                            self.__failed += 1
-                            self.__failed_mutex.release()
+                            self.__submit_failure("429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname))
                             if not display_bar:
-                                self.__progress_mutex.acquire()
-                                self.__progress.release()
-                                self.__progress_mutex.release()
+                                self.__submit_progress()
                             return
                         else:
                             timeout += 1
@@ -528,14 +563,9 @@ class KMP:
                         
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
-                        jutils.write_to_file(LOG_NAME, "{code} UNREGISTERED TIMEOUT AND NONKEMONO LINK -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
-                        self.__failed_mutex.acquire()
-                        self.__failed += 1
-                        self.__failed_mutex.release()
+                        self.__submit_failure("{code} UNREGISTERED TIMEOUT AND NONKEMONO LINK -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname))
                         if not display_bar:
-                            self.__progress_mutex.acquire()
-                            self.__progress.release()
-                            self.__progress_mutex.release()
+                            self.__submit_progress()
                         return
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 notifcation+=1
@@ -560,9 +590,7 @@ class KMP:
         if not found:
             logging.info("{} has nontracked MIME type {}, skipping".format(src, format))
             if not display_bar:
-                self.__progress_mutex.acquire()
-                self.__progress.release()
-                self.__progress_mutex.release()
+                self.__submit_progress()
             return
             
         
@@ -573,10 +601,7 @@ class KMP:
         # If file does not have a length, it is most likely an invalid file
         if fullsize == None:
             logging.critical("Download was attempted on an undownloadable file, details describe\nSrc: " + src + "\nFname: " + fname)
-            jutils.write_to_file(LOG_NAME, "UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
-            self.__failed_mutex.acquire()
-            self.__failed += 1
-            self.__failed_mutex.release()
+            self.__submit_failure("UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname))
         else:
             # Convert fullsize
             fullsize = int(fullsize)
@@ -588,58 +613,14 @@ class KMP:
                 # If does not exists, add an entry
                 self.__existing_file_register.hashtable_add(KVPair(org_fname, []))
             
-            # Get file size of local matching file name files
-            values = self.__existing_file_register.hashtable_lookup_value(org_fname)
             
+            # Get file size of local matching file name files            
             download = False
             # Check 3 conditions when renaming
-            if values and self.__rename:
-                try:
-                    # (1) Local file with same name and same size
-                    index = values.index(fullsize)
-                    values_copy = values # Markoff list for values
-                    try:
-                        # Since case can occur multiple times, run until exception
-                        while True:
-                            # Rename local file with same size to rename target name
-                            try:
-                                # Only rename if name differs
-                                if values[index + 1] != fname:
-                                    os.rename(values[index + 1], fname)
-                                    logging.info("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
-                                    values[index + 1] = fname
-                                values_copy[index + 1] = None
-                                values_copy[index] = None
-                            except FileExistsError:
-                                # If local file does not match rename target name but is the same size, remove local file
-                                if fname != values[index + 1] and os.path.getsize(values[index + 1]) == fullsize:
-                                    logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
-                                    os.remove(values[index + 1])
-                                    values = values[0:index] + values[index + 1:]
-                                    values_copy = values_copy[0:index] + values_copy[index + 1:]
-                                # If local file matches rename target name, mark it off
-                                elif values[index + 1] == org_fname:
-                                    logging.info("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
-                                    values_copy[index + 1] = None
-                                    values[index] = None
-                            # If a file is being downloaded while renaming is ongoing, skip and markoff 
-                            except (PermissionError, FileNotFoundError):
-                                values_copy[index + 1] = None
-                                values_copy[index] = None
-                            
-                            
-                            # Prepare for next iteration
-                            index = values_copy.index(fullsize)
-                    # At end of first case, update hash table
-                    except ValueError:
-                        self.__existing_file_register.hashtable_edit_value(org_fname, values)
-                    
-                except ValueError:
-                    # (2) Local file with same name but different size. Let the download part handle it
-                    download = True             
-            # (3) No local file with same base name exists
+            if self.__rename:
+                download = self.dupe_file_procedure(fname, org_fname, fullsize, True)
             else:
-                download = True
+                download = not self.dupe_file_check(org_fname, fullsize)
                 
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
             if download and fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
@@ -666,10 +647,6 @@ class KMP:
                         download_fname = ftokens[0] + " (" + str(i) + ")." + ftokens[2]
                     i += 1
                     
-                # Add file size to hash table
-                values.append(fullsize)
-                values.append(download_fname)
-                self.__existing_file_register.hashtable_edit_value(org_fname, values)
                 self.__existing_file_register_lock.release()
                 
                 while(not done):
@@ -725,17 +702,13 @@ class KMP:
                         # Checks if unrecoverable error as occured
                         if failed:
                             done = True
-                            self.__failed_mutex.acquire()
-                            self.__failed += 1
-                            self.__failed_mutex.release()
+                            self.__submit_failure(None)
                         # Checks if the file is correctly downloaded, if so, we are done
                         elif(os.stat(download_fname).st_size == fullsize):
                             done = True
                             logging.debug("Downloaded Size (" + download_fname + ") -> " + str(fullsize))
                             # Increment file download count, file is downloaded at this point
-                            self.__fcount_mutex.acquire()
-                            self.__fcount += 1
-                            self.__fcount_mutex.release()
+                            self.__submit_downloaded()
                             
                             # Unzip file if specified
                             if self.__unzip and zipextracter.supported_zip_type(download_fname):
@@ -746,10 +719,7 @@ class KMP:
                                     os.mkdir(p)
                                 self.__dir_lock.release()
                                 if not zipextracter.extract_zip(download_fname, p, temp=self.__tempextr):
-                                    jutils.write_to_file(LOG_NAME, "Extraction Failure -> FILE: {fname}\n".format(fname=download_fname), LOG_MUTEX)
-                                    self.__failed_mutex.acquire()
-                                    self.__failed += 1
-                                    self.__failed_mutex.release()
+                                    self.__submit_failure("Extraction Failure -> FILE: {fname}\n".format(fname=download_fname))
                         else:
                             logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
                             #headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
@@ -761,12 +731,9 @@ class KMP:
                     except FileNotFoundError:
                         logging.debug("Cannot be downloaded, file likely a link, not a file ->" + download_fname)
                         done = True
-
-
-
-                    
+    
             else:
-                pass
+                self.__submit_skipped()
                 self.__existing_file_register_lock.release()
                     
         
@@ -932,7 +899,97 @@ class KMP:
         if len(strBuilder) > 0:
             jutils.write_utf8("".join(strBuilder), dir, 'w')
 
+    def dupe_file_check(self, org_fname:str, value):
+        """
+        Check if dupe file exists
 
+        Args:
+            org_fname (str): base name of file
+            value: Characteristic of the file
+        Return true if dupe file exists, false if does not
+        
+        Pre: elf.__existing_file_register_lock is already acquired (will not be released)
+        """
+        values = self.__existing_file_register.hashtable_lookup_value(org_fname)
+        
+        for i in values[0::2]:
+            if i == value:
+                return True
+        
+        return False
+            
+    
+    def dupe_file_procedure(self, fname:str, org_fname:str, value:any, lock:bool = False):
+        """
+        Checks the 
+
+        Param:
+            fname: Full name of file subjected to duplication check
+            org_fname: Base name of file subjected to duplication check
+            value: Characteristic of the file
+            lock: True if self.__existing_file_register_lock is already acquired (will not be released)
+            
+        """
+        writable = False
+        if not lock:
+            self.__existing_file_register_lock.acquire()
+        #hashed = hash(post_contents)
+        values = self.__existing_file_register.hashtable_lookup_value(org_fname)
+        # Check 3 conditions when renaming
+        if values and self.__rename:
+            try:
+                # (1) Local file with same name and same size
+                index = values.index(value)
+                values_copy = values # Markoff list for values
+                try:
+                    # Since case can occur multiple times, run until exception
+                    while True:
+                        # Rename local file with same size to fname
+                        try:
+                            if values[index + 1] != (fname):
+                                os.rename(values[index + 1], fname)
+                                logging.info("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
+                            values[index + 1] = fname
+                            values_copy[index + 1] = None
+                            values_copy[index] = None
+                            
+                        # If file cannot be renamed since a file with the same name exists    
+                        except FileExistsError:
+                            # Local file is not called fname AND is the same file size of fname -> del local file
+                            if fname != values[index + 1] and values[index] == value:
+                                logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
+                                os.remove(values[index + 1])
+                                values = values[0:index] + values[index + 1:]
+                                values_copy = values_copy[0:index] + values_copy[index + 1:]
+                            # If local file matches rename target name, mark it off
+                            elif values[index + 1] == fname:
+                                logging.info("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
+                                values_copy[index + 1] = None
+                                values[index] = None
+                        except (PermissionError, FileNotFoundError):
+                            values_copy[index + 1] = None
+                            values_copy[index] = None
+                        # Prepare for next iteration
+                        index = values_copy.index(value)
+                # At end of first case, update hash table
+                except ValueError:
+                    self.__existing_file_register.hashtable_edit_value(org_fname, values)
+                    writable = False
+                
+            except ValueError:
+                # (2) Local file with same name but different size. Let the download part handle it
+                writable = True             
+            # In cases where file does not exist but is in the register (when scanning a dir multiple times), this step should not be possible to obtain 
+            except FileNotFoundError:
+                logging.info("\n\n\nATTENTION\n\n\n")
+        # If does not exists, add it and write to file
+        elif not values:
+            self.__existing_file_register.hashtable_add(KVPair(org_fname, [value, fname]))
+            writable = True
+        
+        if not lock:    
+            self.__existing_file_register_lock.release()
+        return writable
             
 
     def __process_container(self, url: str, root: str, task_list:Queue|None) -> Queue:
@@ -1088,7 +1145,6 @@ class KMP:
         if not self.__exclcontents:
             if content:
                 text = content.getText(separator='\n', strip=True)
-                writable = False
                 if len(text) > 0:
                     # Text section
                     post_contents = ""
@@ -1117,62 +1173,10 @@ class KMP:
                                 
                                 # update prev
                                 prev = container.contents[0]
-                        
-                    self.__existing_file_register_lock.acquire()
+                    
                     hashed = hash(post_contents)
-                    values = self.__existing_file_register.hashtable_lookup_value(titleDir + org_work_name + "post__content.txt")
-                    # Check 3 conditions when renaming
-                    if values and self.__rename:
-                        try:
-                            # (1) Local file with same name and same size
-                            index = values.index(hashed)
-                            values_copy = values # Markoff list for values
-                            try:
-                                # Since case can occur multiple times, run until exception
-                                while True:
-                                    # Rename local file with same size to rename target name
-                                    try:
-                                        if values[index + 1] != (titleDir + work_name + "post__content.txt"):
-                                            os.rename(values[index + 1], titleDir + work_name + "post__content.txt")
-                                            logging.info("Base name already exists: {}, Renaming local file {} to {}".format(titleDir + org_work_name + "post__content.txt", values[index + 1], titleDir + work_name + "post__content.txt"))
-                                        values[index + 1] = titleDir + work_name + "post__content.txt"
-                                        values_copy[index + 1] = None
-                                        values_copy[index] = None
-                                    except FileExistsError:
-                                        with open(values[index + 1], 'r',  encoding="utf-") as fd:
-                                            txt = fd.read()
-                                        # If local file does not match rename target name but is the same size, remove local file
-                                        if titleDir + work_name + "post__content.txt" != values[index + 1] and hash(txt) == hashed:
-                                            logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(titleDir + org_work_name + "post__content.txt", titleDir + work_name + "post__content.txt", values[index + 1]))
-                                            os.remove(values[index + 1])
-                                            values = values[0:index] + values[index + 1:]
-                                            values_copy = values_copy[0:index] + values_copy[index + 1:]
-                                        # If local file matches rename target name, mark it off
-                                        elif values[index + 1] == titleDir + work_name + "post__content.txt":
-                                            logging.info("Base name already exists: {} in local file {}".format(titleDir + org_work_name + "post__content.txt", values[index + 1]))
-                                            values_copy[index + 1] = None
-                                            values[index] = None
-                                    except (PermissionError, FileNotFoundError):
-                                        values_copy[index + 1] = None
-                                        values_copy[index] = None
-                                    # Prepare for next iteration
-                                    index = values_copy.index(hashed)
-                            # At end of first case, update hash table
-                            except ValueError:
-                                self.__existing_file_register.hashtable_edit_value(titleDir + org_work_name + "post__content.txt", values)
-                                writable = False
-                            
-                        except ValueError:
-                            # (2) Local file with same name but different size. Let the download part handle it
-                            writable = True             
-                        # In cases where file does not exist but is in the register (when scanning a dir multiple times), skip 
-                        except FileNotFoundError:
-                            logging.info("\n\n\nATTENTION\n\n\n")
-                    # If does not exists, add it and write to file
-                    elif not values:
-                        self.__existing_file_register.hashtable_add(KVPair( titleDir + org_work_name + "post__content.txt", [hashed, titleDir + work_name + "post__content.txt"]))
-                        writable = True
-                    self.__existing_file_register_lock.release()
+                    writable = self.dupe_file_procedure(titleDir + work_name + "post__content.txt", titleDir + org_work_name + "post__content.txt", hashed)
+                    
                     # Write to file
                     if(writable):
                         contents_file =  titleDir + work_name + "post__content.txt"
@@ -1220,74 +1224,14 @@ class KMP:
 
         # Download post comments ################################################
         # Skip if omit comment switch is on
-        if not self.__exclcomments:
-                
-            if "patreon" in url or "fanbox" in url:
-                comments = soup.find("div", class_="post__comments")
-                writable = False
-                text = comments.getText(separator='\n', strip=True)
-                # Check for duplicate and writablility
-                if comments and len(text) > 0:
-                    if(text and text != "No comments found for this post." and len(text) > 0):
-                        
-                        self.__existing_file_register_lock.acquire()
-                        hashed = hash(text)
-                        values = self.__existing_file_register.hashtable_lookup_value(titleDir + org_work_name + "post__comments.txt")
-                        # Check 3 conditions when renaming
-                        if values and self.__rename:
-                            try:
-                                # (1) Local file with same name and same size
-                                index = values.index(hashed)
-                                values_copy = values # Markoff list for values
-                                try:
-                                    # Since case can occur multiple times, run until exception
-                                    while True:
-                                        # Rename local file with same size to rename target name
-                                        try:
-                                            if values[index + 1] != (titleDir + work_name + "post__comments.txt"):
-                                                os.rename(values[index + 1], titleDir + work_name + "post__comments.txt")
-                                                logging.info("Base name already exists: {}, Renaming local file {} to {}".format(titleDir + org_work_name + "post__comments.txt", values[index + 1], titleDir + work_name + "post__comments.txt"))
-                                            values[index + 1] = titleDir + work_name + "post__comments.txt"
-                                            values_copy[index + 1] = None
-                                            values_copy[index] = None
-                                        except FileExistsError:
-                                            with open(values[index + 1], 'r',  encoding="utf-") as fd:
-                                                txt = fd.read()
-                                            # If local file does not match rename target name but is the same size, remove local file
-                                            if titleDir + work_name + "post__comments.txt" != values[index + 1] and hash(txt) == hashed:
-                                                logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(titleDir + org_work_name + "post__comments.txt", titleDir + work_name + "post__comments.txt", values[index + 1]))
-                                                os.remove(values[index + 1])
-                                                values = values[0:index] + values[index + 1:]
-                                                values_copy = values_copy[0:index] + values_copy[index + 1:]
-                                            # If local file matches rename target name, mark it off
-                                            elif values[index + 1] == titleDir + work_name + "post__comments.txt":
-                                                logging.info("Base name already exists: {} in local file {}".format(titleDir + org_work_name + "post__comments.txt", values[index + 1]))
-                                                values_copy[index + 1] = None
-                                                values[index] = None
-                                        except (PermissionError, FileNotFoundError):
-                                            values_copy[index + 1] = None
-                                            values_copy[index] = None
-                                        
-                                        # Prepare for next iteration
-                                        index = values_copy.index(hashed)
-                                # At end of first case, update hash table
-                                except ValueError:
-                                    self.__existing_file_register.hashtable_edit_value(titleDir + org_work_name + "post__comments.txt", values)
-                                    writable = False
-                                # In cases where file does not exist but is in the register (when scanning a dir multiple times), skip 
-                                # Also, note that multiple threads may be working on the register at the same time, a thread can read and delete a file while another thread has only read in an item which should not be possible due to mutex
-                                except FileNotFoundError:
-                                    logging.info("\n\n\nATTENTION\n\n\n")
-                                
-                            except ValueError:
-                                # (2) Local file with same name but different size. Let the download part handle it
-                                writable = True             
-                        
-                        # If does not exists, add it and write to file
-                        elif not values:
-                            self.__existing_file_register.hashtable_add(KVPair( titleDir + org_work_name + "post__comments.txt", [hashed, titleDir + work_name + "post__comments.txt"]))
-                            writable = True
-                        self.__existing_file_register_lock.release()
+        if not self.__exclcomments and "patreon" in url or "fanbox" in url:
+            comments = soup.find("div", class_="post__comments")
+            text = comments.getText(separator='\n', strip=True)
+
+            # Check for duplicate and writablility
+            if comments and len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
+                hashed = hash(text)
+                writable = self.dupe_file_procedure(titleDir + work_name + "post__comments.txt", titleDir + org_work_name + "post__comments.txt", hashed)
                 # Write to file
                 if(writable):
                     comments_file =  titleDir + work_name + "post__comments.txt"
@@ -1844,6 +1788,7 @@ class KMP:
         self.__kill_threads(self.__threads)
         self.__kill_threads(task_threads)
         logging.info("Files downloaded: " + str(self.__fcount))
+        logging.info("Files skipped: " + str(self.__scount))
         if self.__failed > 0:
             logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
     
