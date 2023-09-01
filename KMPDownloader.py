@@ -341,6 +341,7 @@ class KMP:
 
         # Pull up current directory information
         contents = os.scandir(dir)
+        secondpath = None
         # Iterate through all elements
         for file in contents:
             
@@ -381,9 +382,11 @@ class KMP:
                     
                     # ID Case
                     fullpath_org = fullpath.rpartition("\\")[2].split(" ")
-                    if fullpath_org[0].isnumeric() and not fullpath_org[1].isnumeric(): # This is the only case it is certain that num in beginning is not part of file name
+                    if fullpath_org[0].isnumeric(): 
+                        secondpath = fullpath       # Since it is impossible to tell if the first part of the filename is the id,
+                                                    # 2 variants of the filename will be stored in the register
                         fullpath = (fullpath.rpartition("\\")[0] + "\\" + " ".join(fullpath_org[1:]))
-                
+                        
                 # Check if is text file and is a file written by the program (contains __)
                 if(file.name.endswith("txt") and "__" in file.name):
                     # Add file contents to register
@@ -392,15 +395,11 @@ class KMP:
                             # Text content of file
                             contents = fd.read()
                             
-                            # Remove id and date from text file if it exists
-                            
-                            """Mutex actually isn't needed in this case, each thread scans its own directory
-                            As a result, no threads can actually conflict with each other""" 
                             mutex.acquire()
+                            # fullpath
                             data = fregister.hashtable_lookup_value(fullpath)
                             # If entry does not exists, add it               
                             if not data:
-                                
                                 fregister.hashtable_add(KVPair(fullpath, [hash(contents), file.path]))
                                 
                             # Else append data to currently existing entry if not already included in the entry
@@ -408,6 +407,18 @@ class KMP:
                                 data.append(hash(contents))
                                 data.append(file.path)
                                 fregister.hashtable_edit_value(fullpath, data)
+                            #second path
+                            if secondpath:
+                                data = fregister.hashtable_lookup_value(secondpath)
+                                # If entry does not exists, add it               
+                                if not data:
+                                    fregister.hashtable_add(KVPair(secondpath, [hash(contents), file.path]))
+                                    
+                                # Else append data to currently existing entry if not already included in the entry
+                                elif(file.path not in data):
+                                    data.append(hash(contents))
+                                    data.append(file.path)
+                                    fregister.hashtable_edit_value(secondpath, data)
                             mutex.release()
                     except(UnicodeDecodeError):
                         logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
@@ -416,9 +427,11 @@ class KMP:
                         logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
                 else:    
                     # Add size value to register
+                    mutex.acquire()
                     data = fregister.hashtable_lookup_value(fullpath)
                     # If entry does not exists, add it               
-                    mutex.acquire()
+                    
+                    # fullpath
                     if not data:
                         fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
                     # Else append data to currently existing entry
@@ -426,6 +439,20 @@ class KMP:
                         data.append(fsize)
                         data.append(file.path)
                         fregister.hashtable_edit_value(fullpath, data)
+
+                    #secondpath
+                    if secondpath:
+                        data = fregister.hashtable_lookup_value(secondpath)
+                        # If entry does not exists, add it               
+                        
+                        # fullpath
+                        if not data:
+                            fregister.hashtable_add(KVPair(secondpath, [fsize, file.path]))
+                        # Else append data to currently existing entry
+                        elif(file.path not in data):
+                            data.append(fsize)
+                            data.append(file.path)
+                            fregister.hashtable_edit_value(secondpath, data)
                     mutex.release()
             # TODO sort values by radix sort and implement binary search
         
@@ -957,12 +984,12 @@ class KMP:
                         # If file cannot be renamed since a file with the same name exists    
                         except FileExistsError:
                             # File with the name already exists AND have diff size as file to rename -> ignore
-                            if fname != values[index + 1] and values[index] == value:
+                            if fname != values[index + 1] and values[index] != value:
                                 logging.info("Base name already exists: {} skipping file with diff size {}".format(org_fname, values[index + 1]))
                                 values_copy[index + 1] = None
                                 values[index] = None
                             # File with the same name already exists and has the same size as file to rename -> delete dupe file
-                            elif fname != values[index + 1] and values[index] != value:
+                            elif fname != values[index + 1] and values[index] == value:
                                 logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
                                 os.remove(values[index + 1])
                                 values = values[0:index] + values[index + 1:]
