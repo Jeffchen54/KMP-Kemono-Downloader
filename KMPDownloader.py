@@ -789,7 +789,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, org_base_name:str | None, task_list:Queue|None, counter:PersistentCounter) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, org_base_name:str | None, task_list:Queue|None, counter:PersistentCounter, postcounter:int|None = None) -> Queue:
         """
         Puts all urls in imgLinks in threadpool download queue. If task_list is not None, then
         all urls will be added to task_list instead of being added to download queue.
@@ -801,6 +801,7 @@ class KMP:
         task_list: list to store tasks into instead of directly processing them, None to directly process them
         counter: a counter to increment for each file and used to rename files
         org_base_name: base name without any additions
+        postcounter: counter added to the end of the file name, None to not have one
         
         Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
         Return modified tasklist, is None if task_list param is None
@@ -848,19 +849,12 @@ class KMP:
                     org_fname = fname
                     
                 else:
-                    fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                    org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                    
-                    # Register file and increment counter if needed
-                    self.__register_mutex.acquire()
-                    regval = self.__register.hashtable_lookup_value(fname.lower())
-                    if regval != None:  # If register, update titleDir and increment value
-                        self.__register.hashtable_edit_value(fname.lower(), regval:= regval + 1)
-                        fname = fname.rpartition(".")[0] + " (" + str(regval) + ")" + "." + fname.rpartition(".")[2]
-                    else:   # If not registered, add to register at value 1
-                        self.__register.hashtable_add(KVPair[str, int](fname.lower(), 1))
-                    
-                    self.__register_mutex.release()                
+                    if not postcounter:
+                        fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                        org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
+                    else:
+                        fname = dir + base_name + str(counter.get()) + ' (' + str(postcounter) +').' + self.__trim_fname(src).rpartition('.')[2]
+                        org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
                     
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname, org_fname)))
@@ -962,23 +956,11 @@ class KMP:
                             
                         # If file cannot be renamed since a file with the same name exists    
                         except FileExistsError:
-                            # File with the name already exists does not have the same size as file to rename -> dupe file resolution
+                            # File with the name already exists AND have diff size as file to rename -> ignore
                             if fname != values[index + 1] and values[index] == value:
-                                logging.info("Base name already exists: {} in local file {}, Sending to dupe resolution process {}".format(org_fname, fname, values[index + 1]))
-                                
-                                # Counter resolution process - Increment counter appending to fname until name that does not exists is found.
-                                self.__register_mutex.acquire()
-                                iname = fname
-                                regval = self.__register.hashtable_lookup_value(fname.lower())
-                                while os.path.exists(iname):
-                                    if regval != None:  # If register, update titleDir and increment value
-                                        self.__register.hashtable_edit_value(fname.lower(), regval:= regval + 1)
-                                    else:   # If not registered, add to register at value 1
-                                        self.__register.hashtable_add(KVPair[str, int](fname.lower(), 1))
-                                        regval = 0
-                                    iname = fname.rpartition(".")[0] + " (" + str(regval) + ")" + "." + fname.rpartition(".")[2]
-                                fname = iname
-                                self.__register_mutex.release()
+                                logging.info("Base name already exists: {} skipping file with diff size {}".format(org_fname, values[index + 1]))
+                                values_copy[index + 1] = None
+                                values[index] = None
                             # File with the same name already exists and has the same size as file to rename -> delete dupe file
                             elif fname != values[index + 1] and values[index] != value:
                                 logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
@@ -1129,9 +1111,11 @@ class KMP:
                 titleDir = titleDir[:len(titleDir) - 1].lower() + " (" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
                 self.__register.hashtable_add(KVPair[str, int](titleDir.lower(), 1))
+                value = 0
             self.__register_mutex.release()
         # For unpacked, all files will be placed in the artist directory
         else:
+            
             titleDir = root
             
             if self.__date:
@@ -1154,7 +1138,15 @@ class KMP:
             org_work_name = work_name + " - "
             work_name = ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "") + " - "
 
-
+            # Add work_name to register
+            self.__register_mutex.acquire()
+            value = self.__register.hashtable_lookup_value(work_name.lower())
+            if value != None:  # If register, update titleDir and increment value
+                self.__register.hashtable_edit_value(work_name.lower(), value + 1)
+            else:   # If not registered, add to register at value 1
+                self.__register.hashtable_add(KVPair[str, int](work_name.lower(), 1))
+                value = 0
+            self.__register_mutex.release()
         # Create directory if not registered
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
@@ -1163,8 +1155,10 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        self.__queue_download_files(imgLinks, titleDir, work_name, org_work_name, task_list, counter)
-        
+        if self.__unpacked < 2:
+            self.__queue_download_files(imgLinks, titleDir, work_name, org_work_name, task_list, counter)
+        else:
+            self.__queue_download_files(imgLinks, titleDir, work_name, org_work_name, task_list, counter, value if value > 0 else None)
         
         # Link type
         self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt", titleDir + org_work_name + "file__text.txt")
@@ -1228,8 +1222,10 @@ class KMP:
                                     
                 
                 # Image Section
-                task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, org_work_name, task_list, counter)
-
+                if self.__unpacked < 2:
+                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, org_work_name, task_list, counter)
+                else:
+                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, org_work_name, task_list, counter, value)
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
@@ -1241,6 +1237,9 @@ class KMP:
                 if download:
                     src = download if "http" in download else self.__container_prefix + download
                     aname =  self.__trim_fname(attachment.text.strip())
+                    
+                    if self.__unpacked == 2 and value > 0:
+                        aname = aname.rpartition('.')[0] + " (" + str(value) + ")." + aname.rpartition(".")[2]
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
                         fname = os.path.join(titleDir, work_name + aname)
