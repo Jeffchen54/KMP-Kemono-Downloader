@@ -43,6 +43,7 @@ LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
 download_format_types = ["image", "audio", "video", "plain", "stream", "application", "7z", "audio"]
+
 class Error(Exception):
     """Base class for other exceptions"""
     pass
@@ -614,13 +615,8 @@ class KMP:
                 self.__existing_file_register.hashtable_add(KVPair(org_fname, []))
             
             
-            # Get file size of local matching file name files            
-            download = False
             # Check 3 conditions when renaming
-            if self.__rename:
-                download = self.dupe_file_procedure(fname, org_fname, fullsize, True)
-            else:
-                download = not self.dupe_file_check(org_fname, fullsize)
+            download = self.dupe_file_procedure(fname, org_fname, fullsize, True)
                 
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
             if download and fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
@@ -854,7 +850,18 @@ class KMP:
                 else:
                     fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
                     org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                                    
+                    
+                    # Register file and increment counter if needed
+                    self.__register_mutex.acquire()
+                    regval = self.__register.hashtable_lookup_value(fname.lower())
+                    if regval != None:  # If register, update titleDir and increment value
+                        self.__register.hashtable_edit_value(fname.lower(), regval:= regval + 1)
+                        fname = fname.rpartition(".")[0] + " (" + str(regval) + ")" + "." + fname.rpartition(".")[2]
+                    else:   # If not registered, add to register at value 1
+                        self.__register.hashtable_add(KVPair[str, int](fname.lower(), 1))
+                    
+                    self.__register_mutex.release()                
+                    
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname, org_fname)))
                 else:
@@ -955,13 +962,30 @@ class KMP:
                             
                         # If file cannot be renamed since a file with the same name exists    
                         except FileExistsError:
-                            # Local file is not called fname AND is the same file size of fname -> del local file
+                            # File with the name already exists does not have the same size as file to rename -> dupe file resolution
                             if fname != values[index + 1] and values[index] == value:
+                                logging.info("Base name already exists: {} in local file {}, Sending to dupe resolution process {}".format(org_fname, fname, values[index + 1]))
+                                
+                                # Counter resolution process - Increment counter appending to fname until name that does not exists is found.
+                                self.__register_mutex.acquire()
+                                iname = fname
+                                regval = self.__register.hashtable_lookup_value(fname.lower())
+                                while os.path.exists(iname):
+                                    if regval != None:  # If register, update titleDir and increment value
+                                        self.__register.hashtable_edit_value(fname.lower(), regval:= regval + 1)
+                                    else:   # If not registered, add to register at value 1
+                                        self.__register.hashtable_add(KVPair[str, int](fname.lower(), 1))
+                                        regval = 0
+                                    iname = fname.rpartition(".")[0] + " (" + str(regval) + ")" + "." + fname.rpartition(".")[2]
+                                fname = iname
+                                self.__register_mutex.release()
+                            # File with the same name already exists and has the same size as file to rename -> delete dupe file
+                            elif fname != values[index + 1] and values[index] != value:
                                 logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
                                 os.remove(values[index + 1])
                                 values = values[0:index] + values[index + 1:]
                                 values_copy = values_copy[0:index] + values_copy[index + 1:]
-                            # If local file matches rename target name, mark it off
+                            # File with the same name is the file to rename -> skip
                             elif values[index + 1] == fname:
                                 logging.info("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
                                 values_copy[index + 1] = None
@@ -977,16 +1001,23 @@ class KMP:
                     writable = False
                 
             except ValueError:
-                # (2) Local file with same name but different size. Let the download part handle it
+                # (2) File cannot be found locally
                 writable = True             
             # In cases where file does not exist but is in the register (when scanning a dir multiple times), this step should not be possible to obtain 
             except FileNotFoundError:
-                logging.info("\n\n\nATTENTION\n\n\n")
+                self.__submit_failure("CRITICAL FAILURE (HASHTABLE); FNAME {src}".format(src=fname))
         # If does not exists, add it and write to file
         elif not values:
             self.__existing_file_register.hashtable_add(KVPair(org_fname, [value, fname]))
             writable = True
-        
+        # If not self.__rename, check if dupe file exists
+        else:
+            for i in values[0::2]:
+                if i == value:
+                    if not lock:    
+                        self.__existing_file_register_lock.release()
+                    return False
+                writable = True
         if not lock:    
             self.__existing_file_register_lock.release()
         return writable
@@ -1092,12 +1123,12 @@ class KMP:
             
             # Check if directory has been registered ###################################
             self.__register_mutex.acquire()
-            value = self.__register.hashtable_lookup_value(titleDir)
+            value = self.__register.hashtable_lookup_value(titleDir.lower())
             if value != None:  # If register, update titleDir and increment value
-                self.__register.hashtable_edit_value(titleDir, value + 1)
-                titleDir = titleDir[:len(titleDir) - 1] + " (" + str(value) + ")\\"
+                self.__register.hashtable_edit_value(titleDir.lower(), value + 1)
+                titleDir = titleDir[:len(titleDir) - 1].lower() + " (" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
-                self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
+                self.__register.hashtable_add(KVPair[str, int](titleDir.lower(), 1))
             self.__register_mutex.release()
         # For unpacked, all files will be placed in the artist directory
         else:
@@ -1176,7 +1207,7 @@ class KMP:
                     
                     hashed = hash(post_contents)
                     writable = self.dupe_file_procedure(titleDir + work_name + "post__content.txt", titleDir + org_work_name + "post__content.txt", hashed)
-                    
+
                     # Write to file
                     if(writable):
                         contents_file =  titleDir + work_name + "post__content.txt"
@@ -1232,6 +1263,7 @@ class KMP:
             if comments and len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
                 hashed = hash(text)
                 writable = self.dupe_file_procedure(titleDir + work_name + "post__comments.txt", titleDir + org_work_name + "post__comments.txt", hashed)
+
                 # Write to file
                 if(writable):
                     comments_file =  titleDir + work_name + "post__comments.txt"
@@ -1312,7 +1344,6 @@ class KMP:
         Return: If get_list is true, a list of tasks needed to process the data is returned.
         Post: pool may not have completed all of its tasks 
         """
-        
         reqs = None
         task_list:Queue = None
         
@@ -1472,12 +1503,12 @@ class KMP:
         """
         dir = titleDir + serverJs.get('name') + '\\'
         # Make sure a dupe directory does not exists, if so, adjust dir name
-        value = self.__register.hashtable_lookup_value(dir)
+        value = self.__register.hashtable_lookup_value(dir.lower())
         if value != None:  # If register, update titleDir and increment value
-            self.__register.hashtable_edit_value(dir, value + 1)
+            self.__register.hashtable_edit_value(dir.lower(), value + 1)
             dir = dir[0:len(dir) - 1] + " (" + str(value) + ")\\"
         else:   # If not registered, add to register at value 1
-            self.__register.hashtable_add(KVPair[str, int](dir, 1))
+            self.__register.hashtable_add(KVPair[str, int](dir.lower(), 1))
 
         text_file = "discord__content.txt"
         # makedir
