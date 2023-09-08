@@ -482,7 +482,7 @@ class KMP:
                 try:
                     for i in range(0, len(self.__urls)):
                         # Check if db entry already exists
-                        entry = self.__db.execute(("SELECT * FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                        entry = self.__db.execute(("SELECT * FROM Parent2 WHERE url LIKE '%'||?", (self.__urls[i].rpartition(".")[2].partition('/')[2],),))
                         old_config = None
                         entries = entry.fetchall()
                         # If it already exists, remove the entry
@@ -490,12 +490,12 @@ class KMP:
                             # Save any old data 
                             old_config = entries[0][5]
                             # Remove old entry
-                            self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                            self.__db.execute(("DELETE FROM Parent2 WHERE url LIKE '%'||?", (self.__urls[i].rpartition(".")[2].partition('/')[2],),))
                         # Insert updated entry
                         self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config) if not old_config else old_config),))
                     done = True
                 except sqlite3.OperationalError:
-                    logging.warning(traceback.format_exc)
+                    traceback.print_exc()
                     logging.warning("Database is locked, waiting 10s before trying again".format(self.__db))
                     time.sleep(10)
         
