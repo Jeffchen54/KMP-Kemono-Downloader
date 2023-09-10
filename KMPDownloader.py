@@ -33,10 +33,9 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Hotfix for directory file name bug with --date switch
 @author Jeff Chen
-@version 0.6.2.1
-@last modified 7/03/2023
+@version 0.6.2.3
+@last modified 9/19/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -325,8 +324,45 @@ class KMP:
 
         file_pool.join_queue()
         file_pool.kill_threads()
+    
+    def __basename_generator(self, name:str)->tuple:
+        """
+        Given a file or dir name (not path), return a basename
+
+        Args:
+            name (str): _description_
+
+        Returns:
+            str: _description_
+        """
+        basename = name
+        ext = name.rpartition('.')[2]
+        if name[0] == "(":
+            basename = name.rpartition(") ")[2]
+        # Postdupe case
+        else:
+            # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
+            if ' (' in name:
+                basename = name.partition(" (")[0] + "." + ext
+            elif '(' in name:
+                basename = name.partition("(")[0] + ext
+
+        basename_tokens = basename.split(" ")        
+        secondpath = None
+        if len(basename_tokens) >= 3:  # Skips files with inadequent tokens
+            # Date case
+            if basename_tokens[len(basename_tokens) - (3 if ext != name else 1)].isnumeric():
+                basename = " ".join(basename_tokens[0:len(basename_tokens) - (5 if ext != name else 3)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
+            # ID Case
+            
+            basename_tokens = basename.split(" ")
+            if basename_tokens[0].isnumeric(): 
+                secondpath = basename   # Is impossible to know if first token references id or something else
+                basename = (" ".join(basename_tokens[1:]))
         
-   
+        
+        return (basename, secondpath) if secondpath else (basename,)
+    
     def __fregister_preload_helper(self, pool:ThreadPool, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
         Adds all files and their size to a hashtable
@@ -341,7 +377,7 @@ class KMP:
 
         # Pull up current directory information
         contents = os.scandir(dir)
-        secondpath = None
+        
         # Iterate through all elements
         for file in contents:
             
@@ -350,110 +386,67 @@ class KMP:
                 pool.enqueue((self.__fregister_preload_helper, (pool, file.path + '\\', fregister, mutex,)))
             # If not directory, get file size and remove any ()
             elif file.stat().st_size > 0:
+                # Get directory name by itself 
+                dir_partition = os.path.dirname(dir).rpartition("\\")
+                dir_name = dir_partition[2]
+                
+                # Generate basename of dir_name
+                base_dir_names = self.__basename_generator(dir_name)
+                
+                # Generate basename of file
+                base_file_names = self.__basename_generator(file.name)
+                
                 # Get file size
                 fsize = os.stat(file.path).st_size
                 
-                # Following process attempts to restore found files to their original file names
-                # Remove (...) if it exists
-                # Predupe case
-                if file.name[0] == "(":
-                    basename = file.name.rpartition(") ")[2]
-                    fullpath = dir + basename
-                
-                # Postdupe case
-                else:
-                    # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
-                    if ' (' in file.name:
-                        ext = file.name.rpartition('.')[2]
-                        basename = file.name.partition(" (")[0]
-                        fullpath = dir + basename + "." + ext
-                    elif '(' in file.name:
-                        ext = file.name.rpartition('.')[2]
-                        basename = file.name.partition("(")[0]
-                        fullpath = dir + basename + "." + ext
-                    else:
-                        fullpath = file.path 
-                
-                fullpath_org = fullpath.rpartition("\\")[2].split(" ")        
-                if len(fullpath_org) >= 3:  # Skips files with inadequent tokens
-                    # Date case
-                    if fullpath_org[len(fullpath_org) - 3].isnumeric():
-                        fullpath = (fullpath.rpartition("\\")[0] + "\\" + " ".join(fullpath_org[0:len(fullpath_org) - 4]) + " " +  " ".join(fullpath_org[len(fullpath_org) - 2:]))
+                # Recreate fullpath
+                dir_paths = [os.path.join(dir_partition[0], n) for n in base_dir_names] # Reconstruct dirpath
+                file_paths = []
+                for dir_path in dir_paths:
+                    for base_file_name in base_file_names:
+                        file_paths.append(os.path.join(dir_path, base_file_name))
+
+                for fullpath in file_paths:     
                     
-                    # ID Case
-                    fullpath_org = fullpath.rpartition("\\")[2].split(" ")
-                    if fullpath_org[0].isnumeric(): 
-                        secondpath = fullpath       # Since it is impossible to tell if the first part of the filename is the id,
-                                                    # 2 variants of the filename will be stored in the register
-                        fullpath = (fullpath.rpartition("\\")[0] + "\\" + " ".join(fullpath_org[1:]))
-                        
-                # Check if is text file and is a file written by the program (contains __)
-                if(file.name.endswith("txt") and "__" in file.name):
-                    # Add file contents to register
-                    try:
-                        with open(file.path, 'r', encoding="utf-") as fd:
-                            # Text content of file
-                            contents = fd.read()
-                            
-                            mutex.acquire()
-                            # fullpath
-                            data = fregister.hashtable_lookup_value(fullpath)
-                            # If entry does not exists, add it               
-                            if not data:
-                                fregister.hashtable_add(KVPair(fullpath, [hash(contents), file.path]))
+                    # Check if is text file and is a file written by the program (contains __)
+                    if(file.name.endswith("txt") and "__" in file.name):
+                        # Add file contents to register
+                        try:
+                            with open(file.path, 'r', encoding="utf-") as fd:
+                                # Text content of file
+                                contents = fd.read()
                                 
-                            # Else append data to currently existing entry if not already included in the entry
-                            elif(file.path not in data):
-                                data.append(hash(contents))
-                                data.append(file.path)
-                                fregister.hashtable_edit_value(fullpath, data)
-                            #second path
-                            if secondpath:
-                                data = fregister.hashtable_lookup_value(secondpath)
+                                mutex.acquire()
+                                # fullpath
+                                data = fregister.hashtable_lookup_value(fullpath)
                                 # If entry does not exists, add it               
                                 if not data:
-                                    fregister.hashtable_add(KVPair(secondpath, [hash(contents), file.path]))
+                                    fregister.hashtable_add(KVPair(fullpath, [hash(contents), file.path]))
                                     
                                 # Else append data to currently existing entry if not already included in the entry
                                 elif(file.path not in data):
                                     data.append(hash(contents))
                                     data.append(file.path)
-                                    fregister.hashtable_edit_value(secondpath, data)
-                            mutex.release()
-                    except(UnicodeDecodeError):
-                        logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
-                        #os.remove(file.path)
-                    except Exception as e:
-                        logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
-                else:    
-                    # Add size value to register
-                    mutex.acquire()
-                    data = fregister.hashtable_lookup_value(fullpath)
-                    # If entry does not exists, add it               
-                    
-                    # fullpath
-                    if not data:
-                        fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
-                    # Else append data to currently existing entry
-                    elif(file.path not in data):
-                        data.append(fsize)
-                        data.append(file.path)
-                        fregister.hashtable_edit_value(fullpath, data)
-
-                    #secondpath
-                    if secondpath:
-                        data = fregister.hashtable_lookup_value(secondpath)
+                                    fregister.hashtable_edit_value(fullpath, data)      
+                                mutex.release()
+                        except(UnicodeDecodeError):
+                            logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
+                            #os.remove(file.path)
+                        except Exception as e:
+                            logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
+                    else:    
+                        # Add size value to register
+                        mutex.acquire()
+                        data = fregister.hashtable_lookup_value(fullpath)
                         # If entry does not exists, add it               
-                        
-                        # fullpath
                         if not data:
-                            fregister.hashtable_add(KVPair(secondpath, [fsize, file.path]))
+                            fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
                         # Else append data to currently existing entry
                         elif(file.path not in data):
                             data.append(fsize)
                             data.append(file.path)
-                            fregister.hashtable_edit_value(secondpath, data)
-                    mutex.release()
+                            fregister.hashtable_edit_value(fullpath, data)
+                        mutex.release()
             # TODO sort values by radix sort and implement binary search
         
     def reset(self) -> None:
@@ -616,7 +609,7 @@ class KMP:
                 break
         
         if not found:
-            logging.info("{} has nontracked MIME type {}, skipping".format(src, format))
+            logging.warning("{} has nontracked MIME type {}, skipping".format(src, format))
             if not display_bar:
                 self.__submit_progress()
             return
@@ -976,7 +969,7 @@ class KMP:
                         try:
                             if values[index + 1] != (fname):
                                 os.rename(values[index + 1], fname)
-                                logging.info("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
+                                logging.debug("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
                             values[index + 1] = fname
                             values_copy[index + 1] = None
                             values_copy[index] = None
@@ -985,18 +978,18 @@ class KMP:
                         except FileExistsError:
                             # File with the name already exists AND have diff size as file to rename -> ignore
                             if fname != values[index + 1] and values[index] != value:
-                                logging.info("Base name already exists: {} skipping file with diff size {}".format(org_fname, values[index + 1]))
+                                logging.debug("Base name already exists: {} skipping file with diff size {}".format(org_fname, values[index + 1]))
                                 values_copy[index + 1] = None
                                 values[index] = None
                             # File with the same name already exists and has the same size as file to rename -> delete dupe file
                             elif fname != values[index + 1] and values[index] == value:
-                                logging.info("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
+                                logging.debug("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
                                 os.remove(values[index + 1])
                                 values = values[0:index] + values[index + 1:]
                                 values_copy = values_copy[0:index] + values_copy[index + 1:]
                             # File with the same name is the file to rename -> skip
                             elif values[index + 1] == fname:
-                                logging.info("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
+                                logging.debug("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
                                 values_copy[index + 1] = None
                                 values[index] = None
                         except (PermissionError, FileNotFoundError):
@@ -1119,15 +1112,16 @@ class KMP:
                 # If is gumroad, time tag can be none
                 if time_tag:
                     time_str = time_tag.text.strip().replace(':', '')
-                    titleDir = os.path.join(root, work_name + " " + time_str) + "\\"
+                    
                 else:
-                        titleDir = os.path.join(root, \
-                    work_name) + "\\"
-
-            else:
-                titleDir = os.path.join(root, \
-                work_name) + "\\"
+                    time_str = None
             
+            if self.__id:
+                id_str = url.rpartition("/")[2]
+            else:
+                id_str = None
+            
+            titleDir = os.path.join(root, ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "")) + "\\"
             work_name= ""
             
             # Check if directory has been registered ###################################
@@ -1205,7 +1199,7 @@ class KMP:
                     for link in links:
                         hr = link.get('href')
                         if not hr:
-                            logging.info("Href returns None at url: {u}".format(u=url))
+                            logging.warning("Href returns None at url: {u}".format(u=url))
                         else:
                             post_contents += ("\n" + hr)
                     
@@ -1936,6 +1930,7 @@ def help() -> None:
     """
     Displays help information on invocating this program
     """    
+    logging.info("List of all switches, please take note of what switches are required:")
     logging.info("DOWNLOAD CONFIG - How files are downloaded\n\
         -f --bulkfile <textfile.txt> : Bulk download from text file containing links\n\
         -d --downloadpath <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
@@ -1948,7 +1943,8 @@ def help() -> None:
         -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n\
         -j --prefix <url prefix>: Set prefix of kemono url. DOES NOT END IN \"\\\". Does not affect databases. default is \"https://kemono.party\".\n\
         -k --disableprescan: Disables prescan used to catelog existing files. Disabling reduces dupe file check accuracy in exchange for lower memory usage and lowered run time.\n\
-        -w --date: Append date to file and/or folder names.\n")
+        -w --date: Disable appending date to file and/or folder names.\n\
+        --id: Disable prepending id to file and/or folder names.\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1983,8 +1979,12 @@ def main() -> None:
     """
     Program runner
     """
+    # Clear scr
+    os.system('cls')
+    
+    # Preliminaries
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s (%(asctime)s): %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
     folder = False
     urls = False
     unzip = False
@@ -2011,8 +2011,8 @@ def main() -> None:
     reupdate = False
     prefix = "https://kemono.party"
     disableprescan = False
-    date = False
-    id = False
+    date = True
+    id = True
     rename = False
     if len(sys.argv) > 1:
         pointer = 1
@@ -2027,11 +2027,11 @@ def main() -> None:
                     pointer += 1
                     logging.info("UNZIP -> " + str(unzip))
                 elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--date':
-                    date = True
+                    date = False
                     pointer += 1
                     logging.info("APPEND DATE -> " + str(date))
                 elif sys.argv[pointer] == '--id':
-                    id = True
+                    id = False
                     pointer += 1
                     logging.info("PREPEND ID -> " + str(id))
                 elif sys.argv[pointer] == '--DEPRECATED':
