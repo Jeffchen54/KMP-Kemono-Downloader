@@ -311,7 +311,7 @@ class KMP:
         contents = os.scandir(dir)
         
         # Generate thread pool
-        file_pool = ThreadPool(100)
+        file_pool = ThreadPool(1)
         file_pool.start_threads()
                     
         # Iterate through all elements
@@ -405,9 +405,8 @@ class KMP:
                 for dir_path in dir_paths:
                     for base_file_name in base_file_names:
                         file_paths.append(os.path.join(dir_path, base_file_name))
-
+                
                 for fullpath in file_paths:     
-                    
                     # Check if is text file and is a file written by the program (contains __)
                     if(file.name.endswith("txt") and "__" in file.name):
                         # Add file contents to register
@@ -809,7 +808,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, org_base_name:str | None, task_list:Queue|None, counter:PersistentCounter, postcounter:int|None = None) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, org_dir: str, base_name:str | None, org_base_name:str | None, task_list:Queue|None, counter:PersistentCounter, postcounter:int|None = None) -> Queue:
         """
         Puts all urls in imgLinks in threadpool download queue. If task_list is not None, then
         all urls will be added to task_list instead of being added to download queue.
@@ -866,15 +865,15 @@ class KMP:
                 # Select the correct download name based on switch
                 if self.__download_server_name_type:
                     fname = dir + base_name + self.__trim_fname(src)
-                    org_fname = fname
+                    org_fname = org_dir + base_name + self.__trim_fname(src)
                     
                 else:
                     if not postcounter:
                         fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
-                        org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
+                        org_fname = org_dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
                     else:
                         fname = dir + base_name + str(counter.get()) + ' (' + str(postcounter) +').' + self.__trim_fname(src).rpartition('.')[2]
-                        org_fname = dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
+                        org_fname = org_dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
                     
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname, org_fname)))
@@ -970,6 +969,8 @@ class KMP:
                             if values[index + 1] != (fname):
                                 os.rename(values[index + 1], fname)
                                 logging.debug("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
+                                if len(os.listdir(os.path.dirname(values[index + 1]))) == 0:
+                                    os.rmdir(os.path.dirname(values[index + 1]))
                             values[index + 1] = fname
                             values_copy[index + 1] = None
                             values_copy[index] = None
@@ -985,6 +986,8 @@ class KMP:
                             elif fname != values[index + 1] and values[index] == value:
                                 logging.debug("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
                                 os.remove(values[index + 1])
+                                if len(os.listdir(os.path.dirname(values[index + 1]))) == 0:
+                                    os.rmdir(os.path.dirname(values[index + 1]))
                                 values = values[0:index] + values[index + 1:]
                                 values_copy = values_copy[0:index] + values_copy[index + 1:]
                             # File with the same name is the file to rename -> skip
@@ -1105,6 +1108,8 @@ class KMP:
         # If not unpacked, need to consider if an existing dir exists
         if self.__unpacked < 2:
             
+            time_str = None
+            id_str = None
             
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
@@ -1113,15 +1118,12 @@ class KMP:
                 if time_tag:
                     time_str = time_tag.text.strip().replace(':', '')
                     
-                else:
-                    time_str = None
             
             if self.__id:
                 id_str = url.rpartition("/")[2]
-            else:
-                id_str = None
             
             titleDir = os.path.join(root, ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "")) + "\\"
+            org_titleDir = os.path.join(root, work_name) + "\\"
             work_name= ""
             
             # Check if directory has been registered ###################################
@@ -1177,12 +1179,12 @@ class KMP:
         # Download all 'files' #####################################################
         # Image type
         if self.__unpacked < 2:
-            self.__queue_download_files(imgLinks, titleDir, work_name, org_work_name, task_list, counter)
+            self.__queue_download_files(imgLinks, titleDir, org_titleDir, work_name, org_work_name, task_list, counter)
         else:
-            self.__queue_download_files(imgLinks, titleDir, work_name, org_work_name, task_list, counter, value if value > 0 else None)
+            self.__queue_download_files(imgLinks, titleDir, org_titleDir, work_name, org_work_name, task_list, counter, value if value > 0 else None)
         
         # Link type
-        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt", titleDir + org_work_name + "file__text.txt")
+        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt", org_titleDir + org_work_name + "file__text.txt")
 
         # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")
@@ -1221,7 +1223,7 @@ class KMP:
                                 prev = container.contents[0]
                     
                     hashed = hash(post_contents)
-                    writable = self.dupe_file_procedure(titleDir + work_name + "post__content.txt", titleDir + org_work_name + "post__content.txt", hashed)
+                    writable = self.dupe_file_procedure(titleDir + work_name + "post__content.txt", org_titleDir + org_work_name + "post__content.txt", hashed)
 
                     # Write to file
                     if(writable):
@@ -1244,9 +1246,9 @@ class KMP:
                 
                 # Image Section
                 if self.__unpacked < 2:
-                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, org_work_name, task_list, counter)
+                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, org_titleDir, work_name, org_work_name, task_list, counter)
                 else:
-                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, org_work_name, task_list, counter, value)
+                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, org_titleDir, work_name, org_work_name, task_list, counter, value)
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
@@ -1264,7 +1266,7 @@ class KMP:
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
                         fname = os.path.join(titleDir, work_name + aname)
-                        oname = os.path.join(titleDir, org_work_name + aname)
+                        oname = os.path.join(org_titleDir, org_work_name + aname)
                         
                         if task_list:
                             task_list.put((self.__download_file, (src, fname, oname, False)))
@@ -1282,7 +1284,7 @@ class KMP:
             # Check for duplicate and writablility
             if comments and len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
                 hashed = hash(text)
-                writable = self.dupe_file_procedure(titleDir + work_name + "post__comments.txt", titleDir + org_work_name + "post__comments.txt", hashed)
+                writable = self.dupe_file_procedure(titleDir + work_name + "post__comments.txt", org_titleDir + org_work_name + "post__comments.txt", hashed)
 
                 # Write to file
                 if(writable):
@@ -1331,7 +1333,7 @@ class KMP:
     
     def __partial_unpack_post_process(self, src, dest)->None:
         """
-        Checks if a folder in src is text only, if so, move everything 
+        Checks if a folder in src is text only or empty, if so, move everything 
         from src to dest
 
         Param:
