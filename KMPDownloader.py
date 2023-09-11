@@ -35,7 +35,7 @@ Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
 @author Jeff Chen
 @version 0.6.2.3
-@last modified 9/19/2023
+@last modified 9/10/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
@@ -439,7 +439,6 @@ class KMP:
                         data = fregister.hashtable_lookup_value(fullpath)
                         # If entry does not exists, add it           
                         if not data:
-                            print(fullpath)
                             fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
                         # Else append data to currently existing entry
                         elif(file.path not in data):
@@ -1151,7 +1150,7 @@ class KMP:
         else:
             
             titleDir = root
-            
+            org_titleDir = root
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
                 
@@ -1979,7 +1978,7 @@ def help() -> None:
     logging.info("UTILITIES - Things that can be done besides downloading\n\
         --UPDATE : Update all tracked artist works. If an entry points to a nonexistant directory, the artist will be skipped.\n\
         --REUPDATE : Redownload all tracked artist works\n\
-        --RENAME : Rename existing files instead of skipping them with current switch config.\n")
+        --RENAME : Rename existing files instead of skipping them with current switch config. Only works with --id and --rename as of now.\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
