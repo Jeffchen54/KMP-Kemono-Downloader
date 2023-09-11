@@ -282,10 +282,7 @@ class KMP:
                 self.__fregister_preload(folder, self.__existing_file_register, self.__existing_file_register_lock)
             logging.info("Finished scanning directory")
         
-        self.__predupe = predupe
-        
-        
-        
+        self.__predupe = predupe        
     
         
     def __fregister_preload(self, dir:str, fregister:HashTable, mutex:Lock) -> None:
@@ -337,16 +334,20 @@ class KMP:
         """
         basename = name
         ext = name.rpartition('.')[2]
+        
+        # Predupe case
         if name[0] == "(":
             basename = name.rpartition(") ")[2]
         # Postdupe case
         else:
             # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
             if ' (' in name:
-                basename = name.partition(" (")[0] + "." + ext
+                basename = name.partition(" (")[0] + (("." + ext) if ext != name else "")
             elif '(' in name:
                 basename = name.partition("(")[0] + ext
-
+            # Probably unecessary trim but to be safe
+            basename = basename.strip()
+                        
         basename_tokens = basename.split(" ")        
         secondpath = None
         if len(basename_tokens) >= 3:  # Skips files with inadequent tokens
@@ -392,7 +393,6 @@ class KMP:
                 
                 # Generate basename of dir_name
                 base_dir_names = self.__basename_generator(dir_name)
-                
                 # Generate basename of file
                 base_file_names = self.__basename_generator(file.name)
                 
@@ -406,7 +406,7 @@ class KMP:
                     for base_file_name in base_file_names:
                         file_paths.append(os.path.join(dir_path, base_file_name))
                 
-                for fullpath in file_paths:     
+                for fullpath in file_paths:  
                     # Check if is text file and is a file written by the program (contains __)
                     if(file.name.endswith("txt") and "__" in file.name):
                         # Add file contents to register
@@ -437,8 +437,9 @@ class KMP:
                         # Add size value to register
                         mutex.acquire()
                         data = fregister.hashtable_lookup_value(fullpath)
-                        # If entry does not exists, add it               
+                        # If entry does not exists, add it           
                         if not data:
+                            print(fullpath)
                             fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
                         # Else append data to currently existing entry
                         elif(file.path not in data):
@@ -635,7 +636,7 @@ class KMP:
             
             
             # Check 3 conditions when renaming
-            download = self.dupe_file_procedure(fname, org_fname, fullsize, True)
+            download = self.__dupe_file_procedure(fname, org_fname, fullsize, True)
                 
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
             if download and fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
@@ -874,13 +875,12 @@ class KMP:
                     else:
                         fname = dir + base_name + str(counter.get()) + ' (' + str(postcounter) +').' + self.__trim_fname(src).rpartition('.')[2]
                         org_fname = org_dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
-                    
+
                 if not task_list:
                     self.__threads.enqueue((self.__download_file, (src, fname, org_fname)))
                 else:
                     task_list.put((self.__download_file, (src, fname, org_fname, False)))
                 counter.toggle()
-        
         return task_list
 
     def __download_file_text(self, textLinks:ResultSet, dir:str, base_dir:str) -> None:
@@ -919,7 +919,7 @@ class KMP:
         if len(strBuilder) > 0:
             jutils.write_utf8("".join(strBuilder), dir, 'w')
 
-    def dupe_file_check(self, org_fname:str, value):
+    def __dupe_file_check(self, org_fname:str, value):
         """
         Check if dupe file exists
 
@@ -939,7 +939,17 @@ class KMP:
         return False
             
     
-    def dupe_file_procedure(self, fname:str, org_fname:str, value:any, lock:bool = False):
+    def __clear_empty(self, dir:str)->None:
+        """
+        Clears a directory if it is empty
+
+        Args:
+            dir (str): directory to check
+        """
+        if len(os.listdir(dir)) == 0:
+            os.rmdir(dir)
+    
+    def __dupe_file_procedure(self, fname:str, org_fname:str, value:any, lock:bool = False):
         """
         Checks the 
 
@@ -969,8 +979,7 @@ class KMP:
                             if values[index + 1] != (fname):
                                 os.rename(values[index + 1], fname)
                                 logging.debug("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
-                                if len(os.listdir(os.path.dirname(values[index + 1]))) == 0:
-                                    os.rmdir(os.path.dirname(values[index + 1]))
+                                self.__clear_empty(os.path.dirname(values[index + 1]))
                             values[index + 1] = fname
                             values_copy[index + 1] = None
                             values_copy[index] = None
@@ -986,8 +995,7 @@ class KMP:
                             elif fname != values[index + 1] and values[index] == value:
                                 logging.debug("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
                                 os.remove(values[index + 1])
-                                if len(os.listdir(os.path.dirname(values[index + 1]))) == 0:
-                                    os.rmdir(os.path.dirname(values[index + 1]))
+                                self.__clear_empty(os.path.dirname(values[index + 1]))
                                 values = values[0:index] + values[index + 1:]
                                 values_copy = values_copy[0:index] + values_copy[index + 1:]
                             # File with the same name is the file to rename -> skip
@@ -1126,12 +1134,15 @@ class KMP:
             org_titleDir = os.path.join(root, work_name) + "\\"
             work_name= ""
             
+            self.__post_process.append((self.__clear_empty, (titleDir,)))
+
+            
             # Check if directory has been registered ###################################
             self.__register_mutex.acquire()
             value = self.__register.hashtable_lookup_value(titleDir.lower())
             if value != None:  # If register, update titleDir and increment value
                 self.__register.hashtable_edit_value(titleDir.lower(), value + 1)
-                titleDir = titleDir[:len(titleDir) - 1].lower() + " (" + str(value) + ")\\"
+                titleDir = titleDir[:len(titleDir) - 1] + " (" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
                 self.__register.hashtable_add(KVPair[str, int](titleDir.lower(), 1))
                 value = 0
@@ -1223,7 +1234,7 @@ class KMP:
                                 prev = container.contents[0]
                     
                     hashed = hash(post_contents)
-                    writable = self.dupe_file_procedure(titleDir + work_name + "post__content.txt", org_titleDir + org_work_name + "post__content.txt", hashed)
+                    writable = self.__dupe_file_procedure(titleDir + work_name + "post__content.txt", org_titleDir + org_work_name + "post__content.txt", hashed)
 
                     # Write to file
                     if(writable):
@@ -1284,7 +1295,7 @@ class KMP:
             # Check for duplicate and writablility
             if comments and len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
                 hashed = hash(text)
-                writable = self.dupe_file_procedure(titleDir + work_name + "post__comments.txt", org_titleDir + org_work_name + "post__comments.txt", hashed)
+                writable = self.__dupe_file_procedure(titleDir + work_name + "post__comments.txt", org_titleDir + org_work_name + "post__comments.txt", hashed)
 
                 # Write to file
                 if(writable):
