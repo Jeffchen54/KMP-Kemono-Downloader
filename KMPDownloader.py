@@ -308,7 +308,7 @@ class KMP:
         contents = os.scandir(dir)
         
         # Generate thread pool
-        file_pool = ThreadPool(1)
+        file_pool = ThreadPool(100)
         file_pool.start_threads()
                     
         # Iterate through all elements
