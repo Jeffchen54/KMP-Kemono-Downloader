@@ -353,7 +353,7 @@ class KMP:
         if len(basename_tokens) >= 3:  # Skips files with inadequent tokens
             # Date case
             if basename_tokens[len(basename_tokens) - (3 if ext != name else 1)].isnumeric():
-                basename = " ".join(basename_tokens[0:len(basename_tokens) - (5 if ext != name else 3)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
+                basename = " ".join(basename_tokens[0:len(basename_tokens) - (4 if ext != name else 2)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
             # ID Case
             
             basename_tokens = basename.split(" ")
@@ -1123,7 +1123,7 @@ class KMP:
                 
                 # If is gumroad, time tag can be none
                 if time_tag:
-                    time_str = time_tag.text.strip().replace(':', '')
+                    time_str = time_tag.text.strip().replace(':', '').partition(" ")[2]
                     
             
             if self.__id:
@@ -1156,7 +1156,7 @@ class KMP:
                 
                 # If is gumroad, time tag can be none
                 if time_tag:
-                    time_str = time_tag.text.strip().replace(':', '')
+                    time_str = time_tag.text.strip().replace(':', '').partition(" ")[2]
                 else:
                     time_str = None
                 
