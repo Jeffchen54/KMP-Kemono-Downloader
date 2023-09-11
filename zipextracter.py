@@ -26,7 +26,7 @@ def supported_zip_type(fname:str) -> bool:
         extension = file.rpartition('.')[2]
         return 'zip' == extension or 'rar' == extension or '7z' == extension
         
-def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
+def extract_zip(zippath: str, destpath: str, temp:bool) -> bool:
         """
         Extracts a zip file to a destination. Does nothing if file
         is password protected. Zipfile is deleted if extraction is 
@@ -51,6 +51,7 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
         temp: True to extract to a temp dir then moving the files to destpath, false to extract
             directly to destpath. TODO implement.
         Pre: Is a zip file, can be checked using supported_zip_type(). destpath exists
+        Return: True on success, false on failure
         """
         destpath += '\\'
         backup_destpath = destpath
@@ -104,8 +105,9 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
                     destpath = backup_destpath
 
                 os.remove(zippath)
+                return True
             except util.PatoolError as e:
-                logging.critical("Unzipping a non zip file has occured, failure is described below:" +
+                logging.critical("Unzipping a non zip file has occured or password protected file, failure is described below:" +
                                 "\n + ""File name: " + zippath + "\n" + "File size: " + str(os.stat(zippath).st_size))
                 logging.critical(e)
                 d = os.listdir(destpath)
@@ -114,7 +116,7 @@ def extract_zip(zippath: str, destpath: str, temp:bool) -> None:
             except RuntimeError:
                 logging.debug("File name: " + zippath + "\n" +
                             "File size: " + str(os.stat(zippath).st_size))
-
+            return False
 def main():
     if supported_zip_type(sys.argv[1]):
         extract_zip(os.path.abspath(sys.argv[1]), os.path.abspath("./testing") + '\\', True)

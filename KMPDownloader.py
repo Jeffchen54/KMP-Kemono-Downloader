@@ -33,16 +33,16 @@ from DB import DB
 """
 Simple kemono.party downloader relying on html parsing and download by url
 Using multithreading
-- Hotfix for directory file name bug with --date switch
 @author Jeff Chen
-@version 0.6.2.1
-@last modified 7/03/2023
+@version 0.6.2.3
+@last modified 9/10/2023
 """
 HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
 download_format_types = ["image", "audio", "video", "plain", "stream", "application", "7z", "audio"]
+
 class Error(Exception):
     """Base class for other exceptions"""
     pass
@@ -96,7 +96,7 @@ class KMP:
     __db:DB                             # Name of database
     __update:bool                       # True for update mode, false for download mode
     __exclcomments:bool                 # Exclude comments switch
-    __exclcontents:bool                 # Exclude contents switch
+    __exclcontents:bool                 # Exclude contents switch 
     __minsize:bool                      # Minimum downloadable file size
     __existing_file_register:HashTable  # Existing files and their size
     __existing_file_register_lock:Lock  # Lock for existing file table
@@ -108,11 +108,16 @@ class KMP:
     __artist:list[str]                  # Downloaded artist name
     __reupdate:bool                     # True to reupdate, false to not
     __date:bool                         # True to append date to files/folder, false to not
-    
-
+    __id:bool                           # True to prepend id to files/folder, false to not
+    __rename:bool                      # True to rename tracked artist files (nothing is downloaded), false for regular operation.
+    __tempextr:bool                     # True to extract to temp folder then move to dir, false to extract within dir only
+    __root:str                          # Root directory
+    __scount:int                        # Number of files skipped
+    __scount_mutex:Lock                 # lock for scount
+     
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
-        disableprescan:bool = False, date:bool = False, **kwargs) -> None:
+        disableprescan:bool = False, date:bool = False, id:bool = False, rename:bool = False, tempextr:bool = True, root:str = os.path.dirname(os.path.realpath(__file__)), **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -136,11 +141,14 @@ class KMP:
             disableprescan: True to disable prescan used to build temp dupe file database.
             kwargs: not in use for now
         """
+        self.__root = root
         tname.id = None
         if folder:
             self.__folder = folder
         elif not update and not kwargs["reupdate"]:
             raise UnspecifiedDownloadPathException
+        self.__scount = 0
+        self.__scount_mutex = Lock()
         self.__dir_lock = Lock()
         self.__progress_mutex = Lock()
         self.__progress = Semaphore(value=0)
@@ -156,7 +164,7 @@ class KMP:
         self.__download_server_name_type = download_server_name_type
         self.__link_name_exclusion = link_name_exclusion
         self.__register_mutex = Lock()
-        self.__db = DB(db_name)
+        self.__db = DB(os.path.join(root, db_name))
         self.__update = update
         self.__exclcomments = exclcomments
         self.__exclcontents = exclcontents
@@ -167,6 +175,8 @@ class KMP:
         self.__artist = []       
         self.__container_prefix = prefix
         self.__date = date
+        self.__tempextr = tempextr
+        self.__id = id
         if minsize < 0:
             self.__minsize = 0
         else:
@@ -201,16 +211,17 @@ class KMP:
         else:
             self.__ext_blacklist = None
         self.__reupdate = kwargs["reupdate"]
+        self.__rename = rename
         # Create database  #############
         if track or update or kwargs["reupdate"]:
             # Check if database exists
-            if os.path.exists(os.path.join("./", db_name)):
+            if os.path.exists(os.path.join(self.__root, db_name)):
                 # If exists, create a backup
-                if(not os.path.exists(os.path.join("./", "Data_Backup"))):
-                    os.makedirs(os.path.join("./", "Data_Backup"))
+                if(not os.path.exists(os.path.join(self.__root, "Data_Backup"))):
+                    os.makedirs(os.path.join(self.__root, "Data_Backup"))
                 # Copy db file to backup location
                 db_part_name = db_name.rpartition('.')
-                shutil.copyfile(os.path.join("./", db_name), os.path.join("./", "Data_Backup/", db_part_name[0] + "-" + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') + "." + db_part_name[2])) 
+                shutil.copyfile(os.path.join(self.__root, db_name), os.path.join(self.__root, "Data_Backup/", db_part_name[0] + "-" + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') + "." + db_part_name[2])) 
                 
             
             # Create a new table
@@ -271,10 +282,7 @@ class KMP:
                 self.__fregister_preload(folder, self.__existing_file_register, self.__existing_file_register_lock)
             logging.info("Finished scanning directory")
         
-        self.__predupe = predupe
-        
-        
-        
+        self.__predupe = predupe        
     
         
     def __fregister_preload(self, dir:str, fregister:HashTable, mutex:Lock) -> None:
@@ -300,12 +308,11 @@ class KMP:
         contents = os.scandir(dir)
         
         # Generate thread pool
-        file_pool = ThreadPool(100)
+        file_pool = ThreadPool(1)
         file_pool.start_threads()
                     
         # Iterate through all elements
         for file in contents:
-            
             # If is a directory, recursive call into directory and append result
             if file.is_dir():
                 file_pool.enqueue((self.__fregister_preload_helper, (file_pool, file.path + '\\', fregister, mutex,)))
@@ -314,7 +321,49 @@ class KMP:
 
         file_pool.join_queue()
         file_pool.kill_threads()
+    
+    def __basename_generator(self, name:str)->tuple:
+        """
+        Given a file or dir name (not path), return a basename
+
+        Args:
+            name (str): _description_
+
+        Returns:
+            str: _description_
+        """
+        basename = name
+        ext = name.rpartition('.')[2]
         
+        # Predupe case
+        if name[0] == "(":
+            basename = name.rpartition(") ")[2]
+        # Postdupe case
+        else:
+            # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
+            if ' (' in name:
+                basename = name.partition(" (")[0] + (("." + ext) if ext != name else "")
+            elif '(' in name:
+                basename = name.partition("(")[0] + ext
+            # Probably unecessary trim but to be safe
+            basename = basename.strip()
+                        
+        basename_tokens = basename.split(" ")        
+        secondpath = None
+        if len(basename_tokens) >= 3:  # Skips files with inadequent tokens
+            # Date case
+            if basename_tokens[len(basename_tokens) - (3 if ext != name else 1)].isnumeric():
+                basename = " ".join(basename_tokens[0:len(basename_tokens) - (5 if ext != name else 3)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
+            # ID Case
+            
+            basename_tokens = basename.split(" ")
+            if basename_tokens[0].isnumeric(): 
+                secondpath = basename   # Is impossible to know if first token references id or something else
+                basename = (" ".join(basename_tokens[1:]))
+        
+        
+        return (basename, secondpath) if secondpath else (basename,)
+    
     def __fregister_preload_helper(self, pool:ThreadPool, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
         Adds all files and their size to a hashtable
@@ -338,67 +387,65 @@ class KMP:
                 pool.enqueue((self.__fregister_preload_helper, (pool, file.path + '\\', fregister, mutex,)))
             # If not directory, get file size and remove any ()
             elif file.stat().st_size > 0:
+                # Get directory name by itself 
+                dir_partition = os.path.dirname(dir).rpartition("\\")
+                dir_name = dir_partition[2]
+                
+                # Generate basename of dir_name
+                base_dir_names = self.__basename_generator(dir_name)
+                # Generate basename of file
+                base_file_names = self.__basename_generator(file.name)
+                
                 # Get file size
                 fsize = os.stat(file.path).st_size
                 
-                # Remove (...) if it exists
-                # Predupe case
-                if file.name[0] == "(":
-                    basename = file.name.rpartition(") ")[2]
-                    fullpath = dir + basename
+                # Recreate fullpath
+                dir_paths = [os.path.join(dir_partition[0], n) for n in base_dir_names] # Reconstruct dirpath
+                file_paths = []
+                for dir_path in dir_paths:
+                    for base_file_name in base_file_names:
+                        file_paths.append(os.path.join(dir_path, base_file_name))
                 
-                # Postdupe case
-                else:
-                    # 2 types of '(' checked for since previous versions <=0.6 don't have spacing between filename and () 
-                    if ' (' in file.name:
-                        ext = file.name.rpartition('.')[2]
-                        basename = file.name.partition(" (")[0]
-                        fullpath = dir + basename + "." + ext
-                    elif '(' in file.name:
-                        ext = file.name.rpartition('.')[2]
-                        basename = file.name.partition("(")[0]
-                        fullpath = dir + basename + "." + ext
-                    else:
-                        fullpath = file.path 
-                
-                # Check if is text file and is a file written by the program (contains __)
-                if(file.name.endswith("txt") and "__" in file.name):
-                    # Add file contents to register
-                    try:
-                        with open(file.path, 'r', encoding="utf-") as fd:
-                            # Text content of file
-                            contents = fd.read()
-                            
-                            """Mutex actually isn't needed in this case, each thread scans its own directory
-                            As a result, no threads can actually conflict with each other""" 
-                            data = fregister.hashtable_lookup_value(fullpath)
-                            # If entry does not exists, add it               
-                            if not data:
+                for fullpath in file_paths:  
+                    # Check if is text file and is a file written by the program (contains __)
+                    if(file.name.endswith("txt") and "__" in file.name):
+                        # Add file contents to register
+                        try:
+                            with open(file.path, 'r', encoding="utf-") as fd:
+                                # Text content of file
+                                contents = fd.read()
+                                
                                 mutex.acquire()
-                                fregister.hashtable_add(KVPair(fullpath, [hash(contents)]))
+                                # fullpath
+                                data = fregister.hashtable_lookup_value(fullpath)
+                                # If entry does not exists, add it               
+                                if not data:
+                                    fregister.hashtable_add(KVPair(fullpath, [hash(contents), file.path]))
+                                    
+                                # Else append data to currently existing entry if not already included in the entry
+                                elif(file.path not in data):
+                                    data.append(hash(contents))
+                                    data.append(file.path)
+                                    fregister.hashtable_edit_value(fullpath, data)      
                                 mutex.release()
-                            # Else append data to currently existing entry
-                            else:
-                                data.append(hash(contents))
-                                fregister.hashtable_edit_value(fullpath, data)
-                    except(UnicodeDecodeError):
-                        logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
-                        #os.remove(file.path)
-                    except Exception as e:
-                        logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
-                else:    
-                    # Add size value to register
-                    data = fregister.hashtable_lookup_value(fullpath)
-                    # If entry does not exists, add it               
-                    if not data:
+                        except(UnicodeDecodeError):
+                            logging.warning("UnicodeDecodeError in {}, skipping file".format(file.path))
+                            #os.remove(file.path)
+                        except Exception as e:
+                            logging.error("Handled an unknown exception, skipping file: {}".format(e.__class__.__name__))
+                    else:    
+                        # Add size value to register
                         mutex.acquire()
-                        fregister.hashtable_add(KVPair(fullpath, [fsize]))
+                        data = fregister.hashtable_lookup_value(fullpath)
+                        # If entry does not exists, add it           
+                        if not data:
+                            fregister.hashtable_add(KVPair(fullpath, [fsize, file.path]))
+                        # Else append data to currently existing entry
+                        elif(file.path not in data):
+                            data.append(fsize)
+                            data.append(file.path)
+                            fregister.hashtable_edit_value(fullpath, data)
                         mutex.release()
-                    # Else append data to currently existing entry
-                    else:
-                        data.append(fsize)
-                        fregister.hashtable_edit_value(fullpath, data)
-
             # TODO sort values by radix sort and implement binary search
         
     def reset(self) -> None:
@@ -427,7 +474,7 @@ class KMP:
                 try:
                     for i in range(0, len(self.__urls)):
                         # Check if db entry already exists
-                        entry = self.__db.execute(("SELECT * FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                        entry = self.__db.execute(("SELECT * FROM Parent2 WHERE url LIKE '%'||?", (self.__urls[i].rpartition(".")[2].partition('/')[2],),))
                         old_config = None
                         entries = entry.fetchall()
                         # If it already exists, remove the entry
@@ -435,27 +482,65 @@ class KMP:
                             # Save any old data 
                             old_config = entries[0][5]
                             # Remove old entry
-                            self.__db.execute(("DELETE FROM Parent2 WHERE url = ?", (self.__urls[i],),))
+                            self.__db.execute(("DELETE FROM Parent2 WHERE url LIKE '%'||?", (self.__urls[i].rpartition(".")[2].partition('/')[2],),))
                         # Insert updated entry
                         self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config) if not old_config else old_config),))
                     done = True
                 except sqlite3.OperationalError:
-                    logging.warning(traceback.format_exc)
+                    traceback.print_exc()
                     logging.warning("Database is locked, waiting 10s before trying again".format(self.__db))
                     time.sleep(10)
         
             self.__db.commit()
             self.__db.close()
 
-    def __download_file(self, src: str, fname: str, display_bar:bool = True) -> None:
+    def __submit_failure(self, msg:str|None) -> None:
+        """
+        Called when a file related failure occurs
+        
+        Param:
+            msg: Message to write to LOG_NAME, skip step if None
+        """
+        jutils.write_to_file(LOG_NAME, msg, LOG_MUTEX) if msg else None
+        self.__failed_mutex.acquire()
+        self.__failed += 1
+        self.__failed_mutex.release()
+    
+    def __submit_progress(self) -> None:
+        """
+        Called when progress is made on files
+        """
+        self.__progress_mutex.acquire()
+        self.__progress.release()
+        self.__progress_mutex.release()
+    
+    def __submit_downloaded(self) -> None:
+        """
+        Called when a file is successfully downloaded
+        """
+        self.__fcount_mutex.acquire()
+        self.__fcount += 1
+        self.__fcount_mutex.release()
+    
+    def __submit_skipped(self)->None:
+        """
+        Called when a file download is skipped
+        """
+        self.__scount_mutex.acquire()
+        self.__scount += 1
+        self.__scount_mutex.release()
+        
+    def __download_file(self, src: str, fname: str, org_fname: str, display_bar:bool = True) -> None:
         """
         Downloads file at src. Skips if 
             (1) a file already exists sharing the same fname and size 
             (2) Contains blacklisted extensions
             (3) File's name and size matches a locally downloaded file
+        However, if self.__rename is true, file will be renamed according to self's vars if src file matches a local copy
         Param:
             src: src of image to download
             fname: what to name the file to download, with extensions. Absolute path
+            org_fname: fname but the base version of it. Used for file name collision checks.
             display_bar: Whether to display download progress bar or not. If False, display bar is not displayed and self.__progress 
                     is incremented instead.
         Pre: If program is called with a thread, it will use a unique session, if called by main, it will use a newly
@@ -487,14 +572,9 @@ class KMP:
                     if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
                             logging.critical("Reached maximum timeout, writing error to log")
-                            jutils.write_to_file(LOG_NAME, "429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname), LOG_MUTEX)
-                            self.__failed_mutex.acquire()
-                            self.__failed += 1
-                            self.__failed_mutex.release()
+                            self.__submit_failure("429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname))
                             if not display_bar:
-                                self.__progress_mutex.acquire()
-                                self.__progress.release()
-                                self.__progress_mutex.release()
+                                self.__submit_progress()
                             return
                         else:
                             timeout += 1
@@ -503,14 +583,9 @@ class KMP:
                         
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
-                        jutils.write_to_file(LOG_NAME, "{code} UNREGISTERED TIMEOUT AND NONKEMONO LINK -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
-                        self.__failed_mutex.acquire()
-                        self.__failed += 1
-                        self.__failed_mutex.release()
+                        self.__submit_failure("{code} UNREGISTERED TIMEOUT AND NONKEMONO LINK -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname))
                         if not display_bar:
-                            self.__progress_mutex.acquire()
-                            self.__progress.release()
-                            self.__progress_mutex.release()
+                            self.__submit_progress()
                         return
             except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
                 notifcation+=1
@@ -523,6 +598,7 @@ class KMP:
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
                 
                 logging.debug("Connection request unanswered, retrying -> URL: {url}, FNAME: {f}".format(url=src, f=fname))
+        
         # Checking if file has a correct download format
         format = r.headers["content-type"]
         found = False
@@ -532,11 +608,9 @@ class KMP:
                 break
         
         if not found:
-            logging.info("{} has nontracked MIME type {}, skipping".format(src, format))
+            logging.warning("{} has nontracked MIME type {}, skipping".format(src, format))
             if not display_bar:
-                self.__progress_mutex.acquire()
-                self.__progress.release()
-                self.__progress_mutex.release()
+                self.__submit_progress()
             return
             
         
@@ -547,10 +621,7 @@ class KMP:
         # If file does not have a length, it is most likely an invalid file
         if fullsize == None:
             logging.critical("Download was attempted on an undownloadable file, details describe\nSrc: " + src + "\nFname: " + fname)
-            jutils.write_to_file(LOG_NAME, "UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname), LOG_MUTEX)
-            self.__failed_mutex.acquire()
-            self.__failed += 1
-            self.__failed_mutex.release()
+            self.__submit_failure("UNDOWNLOADABLE -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=fname))
         else:
             # Convert fullsize
             fullsize = int(fullsize)
@@ -558,20 +629,16 @@ class KMP:
             # Check to see if file exists in the file register
             self.__existing_file_register_lock.acquire()
             
-            if self.__existing_file_register.hashtable_exist_by_key(fname) == -1:
+            if self.__existing_file_register.hashtable_exist_by_key(org_fname) == -1:
                 # If does not exists, add an entry
-                self.__existing_file_register.hashtable_add(KVPair(fname, []))
+                self.__existing_file_register.hashtable_add(KVPair(org_fname, []))
             
-            # Get file size of local matching file name files
-            values = self.__existing_file_register.hashtable_lookup_value(fname)
             
-            # Check if file name and size exists already
-            if(fullsize in values):
-                # If file size already exists, skip it
-                logging.debug("{} (fsize={}) matches locally available file.".format(fname, fullsize))
-                self.__existing_file_register_lock.release()
+            # Check 3 conditions when renaming
+            download = self.__dupe_file_procedure(fname, org_fname, fullsize, True)
+                
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
-            elif fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
+            if download and fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
                 headers = HEADERS
                 mode = 'wb'
                 done = False
@@ -595,9 +662,6 @@ class KMP:
                         download_fname = ftokens[0] + " (" + str(i) + ")." + ftokens[2]
                     i += 1
                     
-                # Add file size to hash table
-                values.append(fullsize)
-                self.__existing_file_register.hashtable_edit_value(download_fname, values)
                 self.__existing_file_register_lock.release()
                 
                 while(not done):
@@ -653,19 +717,24 @@ class KMP:
                         # Checks if unrecoverable error as occured
                         if failed:
                             done = True
-                            self.__failed_mutex.acquire()
-                            self.__failed += 1
-                            self.__failed_mutex.release()
+                            self.__submit_failure(None)
                         # Checks if the file is correctly downloaded, if so, we are done
                         elif(os.stat(download_fname).st_size == fullsize):
                             done = True
                             logging.debug("Downloaded Size (" + download_fname + ") -> " + str(fullsize))
                             # Increment file download count, file is downloaded at this point
-                            self.__fcount_mutex.acquire()
-                            self.__fcount += 1
-                            self.__fcount_mutex.release()
+                            self.__submit_downloaded()
                             
-                            
+                            # Unzip file if specified
+                            if self.__unzip and zipextracter.supported_zip_type(download_fname):
+                                p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
+                                                        download_fname.rpartition('\\')[2]).rpartition(" by")[0].strip() + "\\"
+                                self.__dir_lock.acquire()
+                                if not os.path.exists(p):
+                                    os.mkdir(p)
+                                self.__dir_lock.release()
+                                if not zipextracter.extract_zip(download_fname, p, temp=self.__tempextr):
+                                    self.__submit_failure("Extraction Failure -> FILE: {fname}\n".format(fname=download_fname))
                         else:
                             logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
                             #headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
@@ -677,19 +746,9 @@ class KMP:
                     except FileNotFoundError:
                         logging.debug("Cannot be downloaded, file likely a link, not a file ->" + download_fname)
                         done = True
-
-
-
-                    # Unzip file if specified
-                    if self.__unzip and zipextracter.supported_zip_type(download_fname):
-                        p = download_fname.rpartition('\\')[0] + "\\" + re.sub(r'[^\w\-_\. ]|[\.]$', '',
-                                                download_fname.rpartition('\\')[2]).rpartition(" by")[0] + "\\"
-                        self.__dir_lock.acquire()
-                        if not os.path.exists(p):
-                            os.mkdir(p)
-                        self.__dir_lock.release()
-                        zipextracter.extract_zip(download_fname, p, temp=True)
+    
             else:
+                self.__submit_skipped()
                 self.__existing_file_register_lock.release()
                     
         
@@ -749,7 +808,7 @@ class KMP:
         return re.sub(r'[^\w\-_\. ]|[\.]$', '',
                                           case1)
 
-    def __queue_download_files(self, imgLinks: ResultSet, dir: str, base_name:str | None, task_list:Queue|None, counter:PersistentCounter) -> Queue:
+    def __queue_download_files(self, imgLinks: ResultSet, dir: str, org_dir: str, base_name:str | None, org_base_name:str | None, task_list:Queue|None, counter:PersistentCounter, postcounter:int|None = None) -> Queue:
         """
         Puts all urls in imgLinks in threadpool download queue. If task_list is not None, then
         all urls will be added to task_list instead of being added to download queue.
@@ -760,6 +819,8 @@ class KMP:
         base_name: Prefix to name files, None for just a counter
         task_list: list to store tasks into instead of directly processing them, None to directly process them
         counter: a counter to increment for each file and used to rename files
+        org_base_name: base name without any additions
+        postcounter: counter added to the end of the file name, None to not have one
         
         Raise: DeadThreadPoolException when no download threads are available, ignored if enqueue is false
         Return modified tasklist, is None if task_list param is None
@@ -772,6 +833,10 @@ class KMP:
         if not base_name:
             base_name = ""
 
+        if not org_base_name:
+            org_base_name = ""
+        
+        
         for link in imgLinks:
             href = link.get('href')
             # Type 1 image - Image in Files section
@@ -800,18 +865,24 @@ class KMP:
                 # Select the correct download name based on switch
                 if self.__download_server_name_type:
                     fname = dir + base_name + self.__trim_fname(src)
-                else:
-                    fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                    org_fname = org_dir + base_name + self.__trim_fname(src)
                     
-                if not task_list:
-                    self.__threads.enqueue((self.__download_file, (src, fname)))
                 else:
-                    task_list.put((self.__download_file, (src, fname, False)))
+                    if not postcounter:
+                        fname = dir + base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]
+                        org_fname = org_dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
+                    else:
+                        fname = dir + base_name + str(counter.get()) + ' (' + str(postcounter) +').' + self.__trim_fname(src).rpartition('.')[2]
+                        org_fname = org_dir + org_base_name + str(counter.get()) + '.' + self.__trim_fname(src).rpartition('.')[2]          
+
+                if not task_list:
+                    self.__threads.enqueue((self.__download_file, (src, fname, org_fname)))
+                else:
+                    task_list.put((self.__download_file, (src, fname, org_fname, False)))
                 counter.toggle()
-        
         return task_list
 
-    def __download_file_text(self, textLinks:ResultSet, dir:str) -> None:
+    def __download_file_text(self, textLinks:ResultSet, dir:str, base_dir:str) -> None:
         """
         Scrapes all text and their links in textLink and saves it to 
         in dir
@@ -819,6 +890,7 @@ class KMP:
         Param:
             textLink: Set of links and their text in Files segment
             dir: Where to save the text and links to. Must be a .txt file
+            base_dir: dir without any additions
         """
         frontOffset = 5
         endOffset = 4
@@ -826,7 +898,8 @@ class KMP:
         listSz = len(textLinks)
         strBuilder = []
         # No work to be done if the file already exists
-        if os.path.exists(dir) or listSz <= 9:
+        if os.path.exists(base_dir) or listSz <= 9:
+            logging.debug(f"File already exists, skipping: {dir}")
             return
         
         # Record data
@@ -845,7 +918,121 @@ class KMP:
         if len(strBuilder) > 0:
             jutils.write_utf8("".join(strBuilder), dir, 'w')
 
+    def __dupe_file_check(self, org_fname:str, value):
+        """
+        Check if dupe file exists
 
+        Args:
+            org_fname (str): base name of file
+            value: Characteristic of the file
+        Return true if dupe file exists, false if does not
+        
+        Pre: elf.__existing_file_register_lock is already acquired (will not be released)
+        """
+        values = self.__existing_file_register.hashtable_lookup_value(org_fname)
+        
+        for i in values[0::2]:
+            if i == value:
+                return True
+        
+        return False
+            
+    
+    def __clear_empty(self, dir:str)->None:
+        """
+        Clears a directory if it is empty
+
+        Args:
+            dir (str): directory to check
+        """
+        if len(os.listdir(dir)) == 0:
+            os.rmdir(dir)
+    
+    def __dupe_file_procedure(self, fname:str, org_fname:str, value:any, lock:bool = False):
+        """
+        Checks the 
+
+        Param:
+            fname: Full name of file subjected to duplication check
+            org_fname: Base name of file subjected to duplication check
+            value: Characteristic of the file
+            lock: True if self.__existing_file_register_lock is already acquired (will not be released)
+            
+        """
+        writable = False
+        if not lock:
+            self.__existing_file_register_lock.acquire()
+        #hashed = hash(post_contents)
+        values = self.__existing_file_register.hashtable_lookup_value(org_fname)
+        # Check 3 conditions when renaming
+        if values and self.__rename:
+            try:
+                # (1) Local file with same name and same size
+                index = values.index(value)
+                values_copy = values # Markoff list for values
+                try:
+                    # Since case can occur multiple times, run until exception
+                    while True:
+                        # Rename local file with same size to fname
+                        try:
+                            if values[index + 1] != (fname):
+                                os.rename(values[index + 1], fname)
+                                logging.debug("Base name already exists: {}, Renaming local file {} to {}".format(org_fname, values[index + 1], fname))
+                                self.__clear_empty(os.path.dirname(values[index + 1]))
+                            values[index + 1] = fname
+                            values_copy[index + 1] = None
+                            values_copy[index] = None
+                            
+                        # If file cannot be renamed since a file with the same name exists    
+                        except FileExistsError:
+                            # File with the name already exists AND have diff size as file to rename -> ignore
+                            if fname != values[index + 1] and values[index] != value:
+                                logging.debug("Base name already exists: {} skipping file with diff size {}".format(org_fname, values[index + 1]))
+                                values_copy[index + 1] = None
+                                values[index] = None
+                            # File with the same name already exists and has the same size as file to rename -> delete dupe file
+                            elif fname != values[index + 1] and values[index] == value:
+                                logging.debug("Base name already exists: {} in local file {}, Deleting local file {}".format(org_fname, fname, values[index + 1]))
+                                os.remove(values[index + 1])
+                                self.__clear_empty(os.path.dirname(values[index + 1]))
+                                values = values[0:index] + values[index + 1:]
+                                values_copy = values_copy[0:index] + values_copy[index + 1:]
+                            # File with the same name is the file to rename -> skip
+                            elif values[index + 1] == fname:
+                                logging.debug("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
+                                values_copy[index + 1] = None
+                                values[index] = None
+                        except (PermissionError, FileNotFoundError):
+                            values_copy[index + 1] = None
+                            values_copy[index] = None
+                        # Prepare for next iteration
+                        index = values_copy.index(value)
+                # At end of first case, update hash table
+                except ValueError:
+                    self.__existing_file_register.hashtable_edit_value(org_fname, values)
+                    writable = False
+                
+            except ValueError:
+                # (2) File cannot be found locally
+                writable = True             
+            # In cases where file does not exist but is in the register (when scanning a dir multiple times), this step should not be possible to obtain 
+            except FileNotFoundError:
+                self.__submit_failure("CRITICAL FAILURE (HASHTABLE); FNAME {src}".format(src=fname))
+        # If does not exists, add it and write to file
+        elif not values:
+            self.__existing_file_register.hashtable_add(KVPair(org_fname, [value, fname]))
+            writable = True
+        # If not self.__rename, check if dupe file exists
+        else:
+            for i in values[0::2]:
+                if i == value:
+                    if not lock:    
+                        self.__existing_file_register_lock.release()
+                    return False
+                writable = True
+        if not lock:    
+            self.__existing_file_register_lock.release()
+        return writable
             
 
     def __process_container(self, url: str, root: str, task_list:Queue|None) -> Queue:
@@ -913,6 +1100,7 @@ class KMP:
         work_name =  (re.sub(r'[^\w\-_\. ]|[\.]$', '', soup.find("title").text.strip())
              ).split("\\")[0]
         backup = work_name + " - "
+        org_work_name = ""
         
         # Check if a post is excluded
         for keyword in self.__post_name_exclusion:
@@ -927,38 +1115,71 @@ class KMP:
         # If not unpacked, need to consider if an existing dir exists
         if self.__unpacked < 2:
             
+            time_str = None
+            id_str = None
             
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
-                time_str = time_tag.text.strip().replace(':', '')
-                titleDir = os.path.join(root, work_name + " " + time_str) + "\\"
-            else:
-                titleDir = os.path.join(root, \
-                work_name) + "\\"
+                
+                # If is gumroad, time tag can be none
+                if time_tag:
+                    time_str = time_tag.text.strip().replace(':', '')
+                    
             
+            if self.__id:
+                id_str = url.rpartition("/")[2]
+            
+            titleDir = os.path.join(root, ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "")) + "\\"
+            org_titleDir = os.path.join(root, work_name) + "\\"
             work_name= ""
+            
+            self.__post_process.append((self.__clear_empty, (titleDir,)))
+
             
             # Check if directory has been registered ###################################
             self.__register_mutex.acquire()
-            value = self.__register.hashtable_lookup_value(titleDir)
+            value = self.__register.hashtable_lookup_value(titleDir.lower())
             if value != None:  # If register, update titleDir and increment value
-                self.__register.hashtable_edit_value(titleDir, value + 1)
+                self.__register.hashtable_edit_value(titleDir.lower(), value + 1)
                 titleDir = titleDir[:len(titleDir) - 1] + " (" + str(value) + ")\\"
             else:   # If not registered, add to register at value 1
-                self.__register.hashtable_add(KVPair[str, int](titleDir, 1))
+                self.__register.hashtable_add(KVPair[str, int](titleDir.lower(), 1))
+                value = 0
             self.__register_mutex.release()
         # For unpacked, all files will be placed in the artist directory
         else:
-            titleDir = root
             
+            titleDir = root
+            org_titleDir = root
             if self.__date:
                 time_tag = soup.find("div", {'class':'post__published'})
-                time_str = time_tag.text.strip().replace(':', '')
-                work_name += f' {time_str} - '
+                
+                # If is gumroad, time tag can be none
+                if time_tag:
+                    time_str = time_tag.text.strip().replace(':', '')
+                else:
+                    time_str = None
+                
             else:
-                work_name += ' - '
+                time_str = None
+                
+            if self.__id:
+                id_str = url.rpartition("/")[2]
+            else:
+                id_str = None
+            
+            org_work_name = work_name + " - "
+            work_name = ((id_str + " ") if id_str else "") + work_name + ((" " + time_str) if time_str else "") + " - "
 
-
+            # Add work_name to register
+            self.__register_mutex.acquire()
+            value = self.__register.hashtable_lookup_value(work_name.lower())
+            if value != None:  # If register, update titleDir and increment value
+                self.__register.hashtable_edit_value(work_name.lower(), value + 1)
+            else:   # If not registered, add to register at value 1
+                self.__register.hashtable_add(KVPair[str, int](work_name.lower(), 1))
+                value = 0
+            self.__register_mutex.release()
         # Create directory if not registered
         if not os.path.isdir(titleDir):
             os.makedirs(titleDir)
@@ -967,12 +1188,13 @@ class KMP:
 
         # Download all 'files' #####################################################
         # Image type
-        
-        self.__queue_download_files(imgLinks, titleDir, work_name, task_list, counter)
-        
+        if self.__unpacked < 2:
+            self.__queue_download_files(imgLinks, titleDir, org_titleDir, work_name, org_work_name, task_list, counter)
+        else:
+            self.__queue_download_files(imgLinks, titleDir, org_titleDir, work_name, org_work_name, task_list, counter, value if value > 0 else None)
         
         # Link type
-        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt")
+        self.__download_file_text(soup.find_all('a', {'target':'_blank'}), titleDir + work_name + "file__text.txt", org_titleDir + org_work_name + "file__text.txt")
 
         # Scrape post content ######################################################
         content = soup.find("div", class_="post__content")
@@ -981,7 +1203,6 @@ class KMP:
         if not self.__exclcontents:
             if content:
                 text = content.getText(separator='\n', strip=True)
-                writable = False
                 if len(text) > 0:
                     # Text section
                     post_contents = ""
@@ -990,7 +1211,7 @@ class KMP:
                     for link in links:
                         hr = link.get('href')
                         if not hr:
-                            logging.info("Href returns None at url: {u}".format(u=url))
+                            logging.warning("Href returns None at url: {u}".format(u=url))
                         else:
                             post_contents += ("\n" + hr)
                     
@@ -1010,27 +1231,10 @@ class KMP:
                                 
                                 # update prev
                                 prev = container.contents[0]
-                        
-                    self.__existing_file_register_lock.acquire()
-                    # Check to see if post__content already exists
-                    if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__content.txt") > 0):
-                        # If it already exists, check if contents match
-                        values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__content.txt")
-                        # If contents match, is duplicates
-                        hashed = hash(post_contents)
-                        if hashed in values:
-                            logging.debug("Post contents already exists")
-                        # If not, write to file
-                        else:
-                            writable = True
                     
-                    # If does not exists, add it and write to file
-                    else:
-                        self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__content.txt", [hash(post_contents)]))
-                        writable = True
-                    
-                    self.__existing_file_register_lock.release()
-                    
+                    hashed = hash(post_contents)
+                    writable = self.__dupe_file_procedure(titleDir + work_name + "post__content.txt", org_titleDir + org_work_name + "post__content.txt", hashed)
+
                     # Write to file
                     if(writable):
                         contents_file =  titleDir + work_name + "post__content.txt"
@@ -1046,12 +1250,15 @@ class KMP:
                                 contents_file = titleDir + work_name + "post__content" + " (" + str(i) + ").txt"
                             i += 1
                         jutils.write_utf8(post_contents, contents_file, 'w')
-                                
+                    
+                    
                                     
                 
                 # Image Section
-                task_list = self.__queue_download_files(content.find_all('img'), titleDir, work_name, task_list, counter)
-
+                if self.__unpacked < 2:
+                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, org_titleDir, work_name, org_work_name, task_list, counter)
+                else:
+                    task_list = self.__queue_download_files(content.find_all('img'), titleDir, org_titleDir, work_name, org_work_name, task_list, counter, value)
         # Download post attachments ##############################################
         attachments = soup.find_all("a", class_="post__attachment-link")
         if attachments:
@@ -1063,47 +1270,32 @@ class KMP:
                 if download:
                     src = download if "http" in download else self.__container_prefix + download
                     aname =  self.__trim_fname(attachment.text.strip())
+                    
+                    if self.__unpacked == 2 and value > 0:
+                        aname = aname.rpartition('.')[0] + " (" + str(value) + ")." + aname.rpartition(".")[2]
                     # If src does not contain excluded keywords, download it
                     if not self.__exclusion_check(self.__link_name_exclusion, aname):
                         fname = os.path.join(titleDir, work_name + aname)
+                        oname = os.path.join(org_titleDir, org_work_name + aname)
                         
                         if task_list:
-                            task_list.put((self.__download_file, (src, fname, False)))
+                            task_list.put((self.__download_file, (src, fname, oname, False)))
                         else:
-                            self.__threads.enqueue((self.__download_file, (src, fname)))
+                            self.__threads.enqueue((self.__download_file, (src, fname, oname)))
         
 
 
         # Download post comments ################################################
         # Skip if omit comment switch is on
-        if not self.__exclcomments:
-                
-            if "patreon" in url or "fanbox" in url:
-                comments = soup.find("div", class_="post__comments")
-                writable = False
-                text = comments.getText(separator='\n', strip=True)
-                # Check for duplicate and writablility
-                if comments and len(text) > 0:
-                    if(text and text != "No comments found for this post." and len(text) > 0):
-                        
-                        self.__existing_file_register_lock.acquire()
-                        # Check if post comments already exists in the work directory
-                        if(self.__existing_file_register.hashtable_exist_by_key(titleDir + work_name + "post__comments.txt") > 0):
-                            # If it already exists, check if contents match
-                            values = self.__existing_file_register.hashtable_lookup_value( titleDir + work_name + "post__comments.txt")
-                            # If contents match, is duplicates
-                            hashed = hash(text)
-                            if hashed in values:
-                                logging.debug("Post comments already exists")
-                            # If not, write to file
-                            else:
-                                writable = True
-                        
-                        # If does not exists, add it and write to file
-                        else:
-                            self.__existing_file_register.hashtable_add(KVPair( titleDir + work_name + "post__comments.txt", [hash(comments)]))
-                            writable = True
-                        self.__existing_file_register_lock.release()
+        if not self.__exclcomments and "patreon" in url or "fanbox" in url:
+            comments = soup.find("div", class_="post__comments")
+            text = comments.getText(separator='\n', strip=True)
+
+            # Check for duplicate and writablility
+            if comments and len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
+                hashed = hash(text)
+                writable = self.__dupe_file_procedure(titleDir + work_name + "post__comments.txt", org_titleDir + org_work_name + "post__comments.txt", hashed)
+
                 # Write to file
                 if(writable):
                     comments_file =  titleDir + work_name + "post__comments.txt"
@@ -1120,7 +1312,6 @@ class KMP:
                         i += 1
                     jutils.write_utf8(text, comments_file, 'w')
                     
-                
             
         # Add to post process queue if partial unpack is on
         if self.__unpacked == 1:
@@ -1152,7 +1343,7 @@ class KMP:
     
     def __partial_unpack_post_process(self, src, dest)->None:
         """
-        Checks if a folder in src is text only, if so, move everything 
+        Checks if a folder in src is text only or empty, if so, move everything 
         from src to dest
 
         Param:
@@ -1185,7 +1376,6 @@ class KMP:
         Return: If get_list is true, a list of tasks needed to process the data is returned.
         Post: pool may not have completed all of its tasks 
         """
-        
         reqs = None
         task_list:Queue = None
         
@@ -1326,9 +1516,9 @@ class KMP:
                         
                         # Download the attachment
                         if get_list:
-                            task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], False)))
+                            task_list.append((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], str(counter) + '.' + url.rpartition('.')[2], False)))
                         else:
-                            self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2])))
+                            self.__threads.enqueue((self.__download_file, (url, imageDir + str(counter) + '.' + url.rpartition('.')[2], str(counter) + '.' + url.rpartition('.')[2])))
                         counter += 1
                         # If is on the register, do not download the attachment
 
@@ -1345,12 +1535,12 @@ class KMP:
         """
         dir = titleDir + serverJs.get('name') + '\\'
         # Make sure a dupe directory does not exists, if so, adjust dir name
-        value = self.__register.hashtable_lookup_value(dir)
+        value = self.__register.hashtable_lookup_value(dir.lower())
         if value != None:  # If register, update titleDir and increment value
-            self.__register.hashtable_edit_value(dir, value + 1)
+            self.__register.hashtable_edit_value(dir.lower(), value + 1)
             dir = dir[0:len(dir) - 1] + " (" + str(value) + ")\\"
         else:   # If not registered, add to register at value 1
-            self.__register.hashtable_add(KVPair[str, int](dir, 1))
+            self.__register.hashtable_add(KVPair[str, int](dir.lower(), 1))
 
         text_file = "discord__content.txt"
         # makedir
@@ -1661,6 +1851,7 @@ class KMP:
         self.__kill_threads(self.__threads)
         self.__kill_threads(task_threads)
         logging.info("Files downloaded: " + str(self.__fcount))
+        logging.info("Files skipped: " + str(self.__scount))
         if self.__failed > 0:
             logging.info("Failed: {failed}, stored in {log}".format(failed=self.__failed, log=LOG_NAME))
     
@@ -1751,6 +1942,7 @@ def help() -> None:
     """
     Displays help information on invocating this program
     """    
+    logging.info("List of all switches, please take note of what switches are required:")
     logging.info("DOWNLOAD CONFIG - How files are downloaded\n\
         -f --bulkfile <textfile.txt> : Bulk download from text file containing links\n\
         -d --downloadpath <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
@@ -1763,7 +1955,8 @@ def help() -> None:
         -i --formats \"image, audio, 7z, ...\": Set download file formats, corresponds to content-type header in HTTP response\n\
         -j --prefix <url prefix>: Set prefix of kemono url. DOES NOT END IN \"\\\". Does not affect databases. default is \"https://kemono.party\".\n\
         -k --disableprescan: Disables prescan used to catelog existing files. Disabling reduces dupe file check accuracy in exchange for lower memory usage and lowered run time.\n\
-        -w --date: Append date to file and/or folder names.\n")
+        -w --date: Disable appending date to file and/or folder names.\n\
+        --id: Disable prepending id to file and/or folder names.\n")
         
     
     logging.info("EXCLUSION - Exclusion of specific downloads\n\
@@ -1784,7 +1977,8 @@ def help() -> None:
     
     logging.info("UTILITIES - Things that can be done besides downloading\n\
         --UPDATE : Update all tracked artist works. If an entry points to a nonexistant directory, the artist will be skipped.\n\
-        --REUPDATE : Redownload all tracked artist works\n")
+        --REUPDATE : Redownload all tracked artist works\n\
+        --RENAME : Rename existing files instead of skipping them with current switch config. Only works with --id and --rename as of now.\n")
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
@@ -1797,9 +1991,12 @@ def main() -> None:
     """
     Program runner
     """
+    # Clear scr
+    os.system('cls')
+    
+    # Preliminaries
     start_time = time.monotonic()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
-
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s (%(asctime)s): %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
     folder = False
     urls = False
     unzip = False
@@ -1826,162 +2023,177 @@ def main() -> None:
     reupdate = False
     prefix = "https://kemono.party"
     disableprescan = False
-    date = False
+    date = True
+    id = True
+    rename = False
     if len(sys.argv) > 1:
         pointer = 1
         while(len(sys.argv) > pointer):
-            if (sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile') and len(sys.argv) >= pointer:
-                with open(sys.argv[pointer + 1], "r") as fd:
-                    urls = fd.readlines()
-                pointer += 2
-            elif sys.argv[pointer] == '-v' or sys.argv[pointer] == '--unzip':
-                unzip = True
-                pointer += 1
-                logging.info("UNZIP -> " + str(unzip))
-            elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--date':
-                date = True
-                pointer += 1
-                logging.info("APPEND DATE -> " + str(date))
-            elif sys.argv[pointer] == '--DEPRECATED':
-                deprecated = True
-                pointer += 1
-                logging.info("DEPRECATED -> " + str(deprecated))
-            elif sys.argv[pointer] == '-b' or sys.argv[pointer] == '--track':
-                track = True
-                pointer += 1
-                logging.info("TRACK -> " + str(track))
-            elif sys.argv[pointer] == '-o' or sys.argv[pointer] == '--omitcomment':
-                exclcomments = True
-                pointer += 1
-                logging.info("OMITCOMMENTS -> " + str(exclcomments))
-            elif sys.argv[pointer] == '-m' or sys.argv[pointer] == '--omitcontent':
-                exclcontents = True
-                pointer += 1 
-                logging.info("OMITPOSTCONTENT -> " + str(exclcontents))
-            elif (sys.argv[pointer] == '-n' or sys.argv[pointer] == '--minsize') and len(sys.argv) >= pointer:
-                minsize = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("MINFILESIZE -> " + str(minsize))
-            elif sys.argv[pointer] == '--UPDATE':
-                update = True
-                pointer += 1
-                logging.info("UPDATE -> " + str(update))
-            elif sys.argv[pointer] == '--REUPDATE':
-                reupdate = True
-                pointer += 1
-                logging.info("REUPDATE -> " + str(reupdate))
-            elif sys.argv[pointer] == '--REUPDATE':
-                reupdate = True
-                pointer += 1
-                logging.info("REUPDATE -> " + str(reupdate))
-            elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
-                server_name = True
-                pointer += 1
-                logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))          
-            elif sys.argv[pointer] == '-a' or sys.argv[pointer] == '--predupe':
-                predupe = True
-                pointer += 1
-                logging.info("PREDUPE -> " + str(predupe))          
-            elif sys.argv[pointer] == '-k' or sys.argv[pointer] == '--disableprescan':
-                disableprescan = True
-                pointer += 1
-                logging.info("DISABLE PRESCAN -> " + str(disableprescan))       
-            elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
-                unpacked = True
-                partial_unpack = False
-                pointer += 1
-                logging.info("UNPACKED -> " + str(unpacked))
-            elif sys.argv[pointer] == '--BENCHMARK':
-                benchmark = True
-                pointer += 1
-                logging.info("BENCHMARK -> TRUE")
-            elif (sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath') and len(sys.argv) >= pointer:
-                folder = os.path.abspath(sys.argv[pointer + 1])
-
-                if folder[len(folder) - 1] == '\"':
-                    folder = folder[:len(folder) - 1] + '\\'
-                elif not folder[len(folder) - 1] == '\\':
-                    folder += '\\'
-
-                logging.info("FOLDER -> " + folder)
-                if not os.path.exists(folder):
-                    logging.critical("FOLDER Path does not exist, terminating program!!!")
-                    return
-                pointer += 2
-            elif (sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct') and len(sys.argv) >= pointer:
-                tcount = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
-            elif (sys.argv[pointer] == '-q' or sys.argv[pointer] == '--logging') and len(sys.argv) >= pointer:
-                log_level =  int(sys.argv[pointer + 1])
-                match log_level:
-                    case 2:
-                        logging.basicConfig(level=9, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
-                    case 3:
-                        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', filename='debug_log.txt', filemode='w', force=True)
-                    case _:
-                        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
-                pointer += 2
-            elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
-                prefix = (sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("PREFIX -> " + prefix)
-            elif (sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait') and len(sys.argv) >= pointer:
-                wait = float(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
-            elif (sys.argv[pointer] == '-g' or sys.argv[pointer] == '--updatedb') and len(sys.argv) >= pointer:
-                db_name = sys.argv[pointer + 1]
-                pointer += 2
-                logging.info("UPDATE_DB_NAME -> " + db_name)
-            elif (sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chunksz') and len(sys.argv) >= pointer:
-                chunksz = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("CHUNKSZ -> " + str(chunksz))
-            elif (sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries') and len(sys.argv) >= pointer:
-                retries = int(sys.argv[pointer + 1])
-                pointer += 2
-                logging.info("RETRIES -> " + str(retries))
-            elif (sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile') and len(sys.argv) >= pointer:
-                 
-                for ext in sys.argv[pointer + 1].split(','):
-                    excluded.append(ext.strip().lower())
-                pointer += 2
-                logging.info("EXT_EXCLUDED -> " + str(excluded))
-            elif (sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink') and len(sys.argv) >= pointer:
-                 
-                for ext in sys.argv[pointer + 1].split(','):
-                    link_excluded.append(ext.strip().lower())
-                pointer += 2
-                logging.info("LINK_EXCLUDED -> " + str(link_excluded))
-            elif (sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost') and len(sys.argv) >= pointer:
-                 
-                for ext in sys.argv[pointer + 1].split(','):
-                    post_excluded.append(ext.strip().lower())
-                pointer += 2
-                logging.info("POST_EXCLUDED -> " + str(post_excluded))
-            
-            elif (sys.argv[pointer] == '-i' or sys.argv[pointer] == '--formats') and len(sys.argv) >= pointer:
-                formats = []
-                for ext in sys.argv[pointer + 1].split(','):
-                    formats.append(ext.strip().lower())
-                pointer += 2
-                global download_format_types
-                download_format_types = formats
-                logging.info("DOWNLOAD FORMATS -> " + str(download_format_types))
-            elif (sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode') and len(sys.argv) >= pointer:
-                
-                for ext in sys.argv[pointer + 1].split(','):
-                    http_codes.append(int(ext.strip()))
-                pointer += 2
-                logging.info("HTTP CODES -> " + str(http_codes))
-            elif sys.argv[pointer] == '-s' or sys.argv[pointer] == '--partialunpack':
-                if not unpacked:
-                    partial_unpack = True
-                    logging.info("PARTIAL_UNPACK -> " + str(partial_unpack))
+            try:
+                if (sys.argv[pointer] == '-f' or  sys.argv[pointer] == '--bulkfile') and len(sys.argv) >= pointer:
+                    with open(sys.argv[pointer + 1], "r") as fd:
+                        urls = fd.readlines()
+                    pointer += 2
+                elif sys.argv[pointer] == '-v' or sys.argv[pointer] == '--unzip':
+                    unzip = True
                     pointer += 1
-            else:
-                pointer = len(sys.argv)
+                    logging.info("UNZIP -> " + str(unzip))
+                elif sys.argv[pointer] == '-w' or sys.argv[pointer] == '--date':
+                    date = False
+                    pointer += 1
+                    logging.info("APPEND DATE -> " + str(date))
+                elif sys.argv[pointer] == '--id':
+                    id = False
+                    pointer += 1
+                    logging.info("PREPEND ID -> " + str(id))
+                elif sys.argv[pointer] == '--DEPRECATED':
+                    deprecated = True
+                    pointer += 1
+                    logging.info("DEPRECATED -> " + str(deprecated))
+                elif sys.argv[pointer] == '-b' or sys.argv[pointer] == '--track':
+                    track = True
+                    pointer += 1
+                    logging.info("TRACK -> " + str(track))
+                elif sys.argv[pointer] == '-o' or sys.argv[pointer] == '--omitcomment':
+                    exclcomments = True
+                    pointer += 1
+                    logging.info("OMITCOMMENTS -> " + str(exclcomments))
+                elif sys.argv[pointer] == '-m' or sys.argv[pointer] == '--omitcontent':
+                    exclcontents = True
+                    pointer += 1 
+                    logging.info("OMITPOSTCONTENT -> " + str(exclcontents))
+                elif (sys.argv[pointer] == '-n' or sys.argv[pointer] == '--minsize') and len(sys.argv) >= pointer:
+                    minsize = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("MINFILESIZE -> " + str(minsize))
+                elif sys.argv[pointer] == '--UPDATE':
+                    update = True
+                    pointer += 1
+                    logging.info("UPDATE -> " + str(update))
+                elif sys.argv[pointer] == '--RENAME':
+                    rename = True
+                    pointer += 1
+                    logging.info("UPDATE -> " + str(update))
+                elif sys.argv[pointer] == '--REUPDATE':
+                    reupdate = True
+                    pointer += 1
+                    logging.info("REUPDATE -> " + str(reupdate))
+                elif sys.argv[pointer] == '--REUPDATE':
+                    reupdate = True
+                    pointer += 1
+                    logging.info("REUPDATE -> " + str(reupdate))
+                elif sys.argv[pointer] == '-e' or sys.argv[pointer] == '--hashname':
+                    server_name = True
+                    pointer += 1
+                    logging.info("SERVER_NAME_DOWNLOAD -> " + str(server_name))          
+                elif sys.argv[pointer] == '-a' or sys.argv[pointer] == '--predupe':
+                    predupe = True
+                    pointer += 1
+                    logging.info("PREDUPE -> " + str(predupe))          
+                elif sys.argv[pointer] == '-k' or sys.argv[pointer] == '--disableprescan':
+                    disableprescan = True
+                    pointer += 1
+                    logging.info("DISABLE PRESCAN -> " + str(disableprescan))       
+                elif sys.argv[pointer] == '-u' or sys.argv[pointer] == '--unpacked':
+                    unpacked = True
+                    partial_unpack = False
+                    pointer += 1
+                    logging.info("UNPACKED -> " + str(unpacked))
+                elif sys.argv[pointer] == '--BENCHMARK':
+                    benchmark = True
+                    pointer += 1
+                    logging.info("BENCHMARK -> TRUE")
+                elif (sys.argv[pointer] == '-d' or sys.argv[pointer] == '--downloadpath') and len(sys.argv) >= pointer:
+                    folder = os.path.abspath(sys.argv[pointer + 1])
+
+                    if folder[len(folder) - 1] == '\"':
+                        folder = folder[:len(folder) - 1] + '\\'
+                    elif not folder[len(folder) - 1] == '\\':
+                        folder += '\\'
+
+                    logging.info("FOLDER -> " + folder)
+                    if not os.path.exists(folder):
+                        logging.critical("FOLDER Path does not exist, terminating program!!!")
+                        return
+                    pointer += 2
+                elif (sys.argv[pointer] == '-t' or sys.argv[pointer] == '--threadct') and len(sys.argv) >= pointer:
+                    tcount = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("DOWNLOAD_THREAD_COUNT -> " + str(tcount))
+                elif (sys.argv[pointer] == '-q' or sys.argv[pointer] == '--logging') and len(sys.argv) >= pointer:
+                    log_level =  int(sys.argv[pointer + 1])
+                    match log_level:
+                        case 2:
+                            logging.basicConfig(level=9, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
+                        case 3:
+                            logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', filename='debug_log.txt', filemode='w', force=True)
+                        case _:
+                            logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
+                    pointer += 2
+                elif (sys.argv[pointer] == '-j' or sys.argv[pointer] == '--prefix') and len(sys.argv) >= pointer:
+                    prefix = (sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("PREFIX -> " + prefix)
+                elif (sys.argv[pointer] == '-w' or sys.argv[pointer] == '--wait') and len(sys.argv) >= pointer:
+                    wait = float(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("DELAY_BETWEEN_DOWNLOADS -> " + str(wait))
+                elif (sys.argv[pointer] == '-g' or sys.argv[pointer] == '--updatedb') and len(sys.argv) >= pointer:
+                    db_name = sys.argv[pointer + 1]
+                    pointer += 2
+                    logging.info("UPDATE_DB_NAME -> " + db_name)
+                elif (sys.argv[pointer] == '-c' or sys.argv[pointer] == '--chunksz') and len(sys.argv) >= pointer:
+                    chunksz = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("CHUNKSZ -> " + str(chunksz))
+                elif (sys.argv[pointer] == '-r' or sys.argv[pointer] == '--maxretries') and len(sys.argv) >= pointer:
+                    retries = int(sys.argv[pointer + 1])
+                    pointer += 2
+                    logging.info("RETRIES -> " + str(retries))
+                elif (sys.argv[pointer] == '-x' or sys.argv[pointer] == '--excludefile') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        excluded.append(ext.strip().lower())
+                    pointer += 2
+                    logging.info("EXT_EXCLUDED -> " + str(excluded))
+                elif (sys.argv[pointer] == '-l' or sys.argv[pointer] == '--excludelink') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        link_excluded.append(ext.strip().lower())
+                    pointer += 2
+                    logging.info("LINK_EXCLUDED -> " + str(link_excluded))
+                elif (sys.argv[pointer] == '-p' or sys.argv[pointer] == '--excludepost') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        post_excluded.append(ext.strip().lower())
+                    pointer += 2
+                    logging.info("POST_EXCLUDED -> " + str(post_excluded))
+                
+                elif (sys.argv[pointer] == '-i' or sys.argv[pointer] == '--formats') and len(sys.argv) >= pointer:
+                    formats = []
+                    for ext in sys.argv[pointer + 1].split(','):
+                        formats.append(ext.strip().lower())
+                    pointer += 2
+                    global download_format_types
+                    download_format_types = formats
+                    logging.info("DOWNLOAD FORMATS -> " + str(download_format_types))
+                elif (sys.argv[pointer] == '-z' or sys.argv[pointer] == '--httpcode') and len(sys.argv) >= pointer:
+                    
+                    for ext in sys.argv[pointer + 1].split(','):
+                        http_codes.append(int(ext.strip()))
+                    pointer += 2
+                    logging.info("HTTP CODES -> " + str(http_codes))
+                elif sys.argv[pointer] == '-s' or sys.argv[pointer] == '--partialunpack':
+                    if not unpacked:
+                        partial_unpack = True
+                        logging.info("PARTIAL_UNPACK -> " + str(partial_unpack))
+                        pointer += 1
+                else:
+                    logging.error(f"{sys.argv[pointer]} is not a valid configuration!")
+                    exit(0)
+            except IndexError:
+                logging.error(f"Missing argument for {sys.argv[pointer]}")
+                exit(0)
 
     # Prelim dirs
     if not os.path.exists(LOG_PATH):
@@ -1991,7 +2203,7 @@ def main() -> None:
     if folder or update or reupdate:
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
-                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date)
+                exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date, id=id, rename=rename)
 
         if not deprecated or benchmark:
             if unpacked:

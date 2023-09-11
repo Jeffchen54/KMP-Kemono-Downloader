@@ -142,6 +142,15 @@ class HashTable:
 
     # Core Functions #################################################
 
+    def hashtable_toarray(self) -> list:
+        """
+        Returns a list of nontombstone values from the hashtable
+
+        Returns:
+            list: _description_
+        """
+        return [(i.getKey(), i.getValue()) for i in self.__records if i and not i.isTombstone()]
+    
     def hashtable_add(self, pair: KVPair) -> None:
         """
         Adds a KVPair to the  hash table and expands if needed

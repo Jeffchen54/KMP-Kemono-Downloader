@@ -20,7 +20,7 @@ class DB():
                 memory only database exists
         """
         self.__db_name = db_name
-        self.__connection = sqlite3.connect(db_name)
+        self.__connection = sqlite3.connect(db_name, check_same_thread=False)
         self.__cursor = self.__connection.cursor()
         self.__lock = threading.Lock()
     
@@ -123,7 +123,7 @@ class DB():
         Closes and reopens the database connection
         """
         self.__connection.close()
-        self.__connection = sqlite3.connect(self.__db_name)
+        self.__connection = sqlite3.connect(self.__db_name, check_same_thread=False)
         self.__cursor = self.__connection.cursor()
     
     
