@@ -350,12 +350,17 @@ class KMP:
                         
         basename_tokens = basename.split(" ")        
         secondpath = None
-        if len(basename_tokens) >= 3:  # Skips files with inadequent tokens
+        if len(basename_tokens) >= 3: # Skips files with inadequent tokens
             # Date case
             if basename_tokens[len(basename_tokens) - (3 if ext != name else 1)].isnumeric():
-                basename = " ".join(basename_tokens[0:len(basename_tokens) - (4 if ext != name else 2)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
-            # ID Case
+                # Check if new keyword is used for date
+                if basename_tokens[len(basename_tokens) - (5 if ext != name else 3)] == "Published":
+                    basename = " ".join(basename_tokens[0:len(basename_tokens) - (5 if ext != name else 3)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
+                # If no keyword is used for date
+                else:
+                    basename = " ".join(basename_tokens[0:len(basename_tokens) - (4 if ext != name else 2)]) + ((" " + " ".join(basename_tokens[len(basename_tokens) - 2:]) if ext != name else ""))
             
+            # ID Case
             basename_tokens = basename.split(" ")
             if basename_tokens[0].isnumeric(): 
                 secondpath = basename   # Is impossible to know if first token references id or something else
@@ -1123,7 +1128,7 @@ class KMP:
                 
                 # If is gumroad, time tag can be none
                 if time_tag:
-                    time_str = time_tag.text.strip().replace(':', '').partition(" ")[2]
+                    time_str = time_tag.text.strip().replace(':', '')
                     
             
             if self.__id:
@@ -1156,7 +1161,7 @@ class KMP:
                 
                 # If is gumroad, time tag can be none
                 if time_tag:
-                    time_str = time_tag.text.strip().replace(':', '').partition(" ")[2]
+                    time_str = time_tag.text.strip().replace(':', '')
                 else:
                     time_str = None
                 
@@ -1287,7 +1292,7 @@ class KMP:
 
         # Download post comments ################################################
         # Skip if omit comment switch is on
-        if not self.__exclcomments and "patreon" in url or "fanbox" in url:
+        if not self.__exclcomments and ("patreon" in url or "fanbox" in url):
             comments = soup.find("div", class_="post__comments")
             text = comments.getText(separator='\n', strip=True)
 
@@ -1982,7 +1987,7 @@ def help() -> None:
     
     logging.info("TROUBLESHOOTING - Solutions to possible issues\n\
         -z --httpcode \"500, 502,...\" : HTTP codes to retry downloads on, default is 429 and 403\n\
-        -r --maxretries <#> : Maximum number of HTTP code retries, default is 100 (negative for infinite which is highly unrecommended)\n\
+        -r --maxretries <#> : Maximum number of HTTP code retries, default is 10 (negative for infinite which is highly unrecommended)\n\
         -h --help : Help\n\
         --DEPRECATED : Enable deprecated download mode\n\
         --BENCHMARK : Benchmark experiemental mode's scraping speed, does not download anything\n")
@@ -2005,7 +2010,7 @@ def main() -> None:
     chunksz = -1
     unpacked = False
     excluded:list = []
-    retries = -1
+    retries = 10
     partial_unpack = False
     http_codes = []
     post_excluded = []
