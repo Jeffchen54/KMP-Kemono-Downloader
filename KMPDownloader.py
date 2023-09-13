@@ -14,7 +14,9 @@ from tqdm import tqdm
 import logging
 import requests.adapters
 from datetime import datetime, timezone
+import webbrowser
 from ssl import SSLError
+import threading
 
 
 from Threadpool import tname
@@ -37,11 +39,12 @@ Using multithreading
 @version 0.6.2.3
 @last modified 9/10/2023
 """
-HEADERS = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0'}
+request_headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0'}
 LOG_PATH = os.path.abspath(".") + "\\logs\\"
 LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
 LOG_MUTEX = Lock()
 download_format_types = ["image", "audio", "video", "plain", "stream", "application", "7z", "audio"]
+KEMONO_URL = "https://kemono.su/artists"
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -114,6 +117,9 @@ class KMP:
     __root:str                          # Root directory
     __scount:int                        # Number of files skipped
     __scount_mutex:Lock                 # lock for scount
+    __wait_browser_cond:threading.Condition  # Conditional used for blocking when waiting on CAPTCHA to be completed
+    __browser_active:bool               # True if browser for captcha has been open, false if not
+    __browser_active_mutex:Lock         # Mutex used for browser_active
      
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
@@ -141,6 +147,8 @@ class KMP:
             disableprescan: True to disable prescan used to build temp dupe file database.
             kwargs: not in use for now
         """
+        self.__wait_browser_cond = threading.Condition()
+        self.__browser_active = Lock()
         self.__root = root
         tname.id = None
         if folder:
@@ -577,7 +585,7 @@ class KMP:
                     if r.status_code in self.__http_codes and 'kemono' in src:
                         if timeout == self.__timeout:
                             logging.critical("Reached maximum timeout, writing error to log")
-                            self.__submit_failure("429 TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname))
+                            self.__submit_failure("TIMEOUT -> SRC: {src}, FNAME: {fname}\n".format(src=src, fname=fname))
                             if not display_bar:
                                 self.__submit_progress()
                             return
@@ -592,12 +600,15 @@ class KMP:
                         if not display_bar:
                             self.__submit_progress()
                         return
-            except(requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                notifcation+=1
-                time.sleep(1)
+            except requests.exceptions.Timeout:
+                logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                time.sleep(20)
             except(requests.exceptions.TooManyRedirects):
                 logging.warning("Redirects trap detected for {}, restarting download in 10 seconds".format(src))
                 time.sleep(10)
+            except(requests.exceptions.RequestException):
+                notifcation+=1
+                time.sleep(1)
                 
                 if(notifcation % 10 == 0):
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
@@ -644,7 +655,7 @@ class KMP:
                 
             # Otherwise, download files that are greater than minimum size and whose extension is not blacklisted
             if download and fullsize > self.__minsize and (not self.__ext_blacklist or self.__ext_blacklist.hashtable_exist_by_key(f.partition('.')[2]) == -1): 
-                headers = HEADERS
+                headers = request_headers
                 mode = 'wb'
                 done = False
                 downloaded = 0          # Used for updating the bar
@@ -676,8 +687,10 @@ class KMP:
                         while not data:
                             try:
                                 data = session.get(src, stream=True, timeout=10, headers=headers)
-                                        
-                            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                            except requests.exceptions.Timeout:
+                                logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                                time.sleep(20)      
+                            except(requests.exceptions.RequestException):
                                 logging.error("Connection timeout on {url}".format(url=src))
                                 time.sleep(5)
                                 
@@ -704,14 +717,20 @@ class KMP:
                                 
                                 try:
                                     for chunk in data.iter_content(chunk_size=self.__chunksz):
-                                        sz = fd.write(chunk)
-                                        fd.flush()
-                                        downloaded += sz
+                                        if chunk:
+                                            sz = fd.write(chunk)
+                                            fd.flush()
+                                            downloaded += sz
+                                        else:
+                                            logging.error("Chunk not received")
                                 except(SSLError):
                                     logging.error("SSL read error has occured on URL: {}".format(src))
                                     jutils.write_to_file(LOG_NAME, "SSL read error -> SRC: {src}, FNAME: {fname}\n".format(code=str(r.status_code), src=src, fname=download_fname), LOG_MUTEX)
                                     failed = True
-                                except(requests.ConnectionError):
+                                except requests.exceptions.Timeout:
+                                    logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                                    time.sleep(20)
+                                except(requests.exceptions.RequestException):
                                     logging.error("Connection error, retrying")
                                     time.sleep(5)
                                 except(Exception) as e:
@@ -1081,8 +1100,11 @@ class KMP:
         reqs = None
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=10, headers=HEADERS)
-            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                reqs = self.__session.get(url, timeout=10, headers=request_headers)
+            except requests.exceptions.Timeout:
+                logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                time.sleep(20)
+            except(requests.exceptions.RequestException):
                  logging.debug("Connection timeout")
                  time.sleep(5)
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -1093,12 +1115,17 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=10, headers=HEADERS)
-                except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                    reqs = self.__session.get(url, timeout=10, headers=request_headers)
+                except requests.exceptions.Timeout:
+                    logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                    time.sleep(20)
+                except(requests.exceptions.RequestException):
                     logging.debug("Connection timeout")
                     time.sleep(5)
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
+        # Sleep for a little bit since request was successful
+        time.sleep(1)
         
 
         # Create a new directory if packed or use artist directory for unpacked
@@ -1292,30 +1319,31 @@ class KMP:
 
         # Download post comments ################################################
         # Skip if omit comment switch is on
-        if not self.__exclcomments and ("patreon" in url or "fanbox" in url):
+        if not self.__exclcomments:
             comments = soup.find("div", class_="post__comments")
-            text = comments.getText(separator='\n', strip=True)
 
             # Check for duplicate and writablility
-            if comments and len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
-                hashed = hash(text)
-                writable = self.__dupe_file_procedure(titleDir + work_name + "post__comments.txt", org_titleDir + org_work_name + "post__comments.txt", hashed)
+            if comments:
+                text = comments.getText(separator='\n', strip=True) 
+                if len(text) > 0 and (text and text != "No comments found for this post." and len(text) > 0):
+                    hashed = hash(text)
+                    writable = self.__dupe_file_procedure(titleDir + work_name + "post__comments.txt", org_titleDir + org_work_name + "post__comments.txt", hashed)
 
-                # Write to file
-                if(writable):
-                    comments_file =  titleDir + work_name + "post__comments.txt"
-                    i = 0
-                    
-                    while(os.path.exists(comments_file)):
-                        # Starts at 0 due to backward compatibility with previous dupe naming scheme
-                        # predupe case
-                        if self.__predupe:
-                            comments_file = titleDir + work_name + "(" + str(i) + ") post__comments.txt"
-                        # postdupe case
-                        else:
-                            comments_file = titleDir + work_name + "post__comments" + " (" + str(i) + ").txt"
-                        i += 1
-                    jutils.write_utf8(text, comments_file, 'w')
+                    # Write to file
+                    if(writable):
+                        comments_file =  titleDir + work_name + "post__comments.txt"
+                        i = 0
+                        
+                        while(os.path.exists(comments_file)):
+                            # Starts at 0 due to backward compatibility with previous dupe naming scheme
+                            # predupe case
+                            if self.__predupe:
+                                comments_file = titleDir + work_name + "(" + str(i) + ") post__comments.txt"
+                            # postdupe case
+                            else:
+                                comments_file = titleDir + work_name + "post__comments" + " (" + str(i) + ").txt"
+                            i += 1
+                        jutils.write_utf8(text, comments_file, 'w')
                     
             
         # Add to post process queue if partial unpack is on
@@ -1390,8 +1418,11 @@ class KMP:
         # Make a connection
         while not reqs:
             try:
-                reqs = self.__session.get(url, timeout=10, headers=HEADERS)
-            except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                reqs = self.__session.get(url, timeout=10, headers=request_headers)
+            except requests.exceptions.Timeout:
+                logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                time.sleep(20)
+            except(requests.exceptions.RequestException):
                  logging.debug("Connection timeout")
                  time.sleep(5)
         soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -1440,8 +1471,11 @@ class KMP:
                 reqs = None
                 while not reqs:
                     try:
-                        reqs = self.__session.get(url + suffix + str(counter), timeout=10, headers=HEADERS)
-                    except(requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                        reqs = self.__session.get(url + suffix + str(counter), timeout=10, headers=request_headers)
+                    except requests.exceptions.Timeout:
+                        logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                        time.sleep(20)
+                    except(requests.exceptions.RequestException):
                          logging.debug("Connection timeout")
                          time.sleep(5)
                 soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -1640,8 +1674,11 @@ class KMP:
             reqs = None
             while not reqs:
                 try:
-                    reqs = self.__session.get(url, timeout=10, headers=HEADERS)
-                except(requests.exceptions.ConnectionError ,requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                    reqs = self.__session.get(url, timeout=10, headers=request_headers)
+                except requests.exceptions.Timeout:
+                    logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
+                    time.sleep(20)
+                except(requests.exceptions.RequestException):
                      logging.debug("Connection timeout")
                      time.sleep(5)
             if(reqs.status_code >= 400):
@@ -2207,6 +2244,15 @@ def main() -> None:
     # Run the downloader
     if folder or update or reupdate:
         logging.warning("YOU MUST VISIT KEMONO.PARTY OR KEMONO.SU AND SOLVE THE CAPTCHA BEFORE RUNNING THE PROGRAM, IF THE PROGRAM IS STUCK, IT MEANS IT IS STUCK ON THE CAPTCHA")
+        
+        # Pull latest user agent
+        with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "user-agent.txt")) as fd:
+            agent = fd.read().strip()
+        
+        # Update user agent
+        global request_headers
+        request_headers['User-agent'] = agent
+        
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
                 exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date, id=id, rename=rename)
