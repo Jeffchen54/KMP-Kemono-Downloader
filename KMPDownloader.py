@@ -2206,6 +2206,7 @@ def main() -> None:
 
     # Run the downloader
     if folder or update or reupdate:
+        logging.warning("YOU MUST VISIT KEMONO.PARTY OR KEMONO.SU AND SOLVE THE CAPTCHA BEFORE RUNNING THE PROGRAM, IF THE PROGRAM IS STUCK, IT MEANS IT IS STUCK ON THE CAPTCHA")
         downloader = KMP(folder, unzip, tcount, chunksz, ext_blacklist=excluded, timeout=retries, http_codes=http_codes, post_name_exclusion=post_excluded,\
             download_server_name_type=server_name, link_name_exclusion=link_excluded, wait=wait, db_name=db_name, track=track, update=update, exclcomments=exclcomments,\
                 exclcontents=exclcontents, minsize=minsize, predupe=predupe, reupdate=reupdate, prefix=prefix, disableprescan=disableprescan, date=date, id=id, rename=rename)
