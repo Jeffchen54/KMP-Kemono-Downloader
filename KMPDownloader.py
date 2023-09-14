@@ -14,7 +14,7 @@ from tqdm import tqdm
 import logging
 import requests.adapters
 from datetime import datetime, timezone
-import webbrowser
+#import webbrowser
 from ssl import SSLError
 import threading
 
@@ -117,9 +117,9 @@ class KMP:
     __root:str                          # Root directory
     __scount:int                        # Number of files skipped
     __scount_mutex:Lock                 # lock for scount
-    __wait_browser_cond:threading.Condition  # Conditional used for blocking when waiting on CAPTCHA to be completed
-    __browser_active:bool               # True if browser for captcha has been open, false if not
-    __browser_active_mutex:Lock         # Mutex used for browser_active
+    #__wait_browser_cond:threading.Condition  # Conditional used for blocking when waiting on CAPTCHA to be completed
+    #__browser_active:bool               # True if browser for captcha has been open, false if not
+    #__browser_active_mutex:Lock         # Mutex used for browser_active
      
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
@@ -200,8 +200,8 @@ class KMP:
         else:
             self.__tcount = min(5, tcount)
             
-        if wait < 0:
-            self.__wait = 0.25
+        if wait < 2:
+            self.__wait = 2
         else:
             self.__wait = wait
 
@@ -608,7 +608,7 @@ class KMP:
                 time.sleep(10)
             except(requests.exceptions.RequestException):
                 notifcation+=1
-                time.sleep(1)
+                time.sleep(self.__wait)
                 
                 if(notifcation % 10 == 0):
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
@@ -710,7 +710,7 @@ class KMP:
                                     fd.flush()
                                     bar.update(sz)
                                     downloaded += sz
-                                time.sleep(1)
+                                time.sleep(self.__wait)
                                 bar.clear()
                         else:
                             with open(download_fname, 'wb') as fd:
@@ -990,10 +990,12 @@ class KMP:
         values = self.__existing_file_register.hashtable_lookup_value(org_fname)
         # Check 3 conditions when renaming
         if values and self.__rename:
+            logging.info("checking")
             try:
                 # (1) Local file with same name and same size
                 index = values.index(value)
                 values_copy = values # Markoff list for values
+                logging.info(values)
                 try:
                     # Since case can occur multiple times, run until exception
                     while True:
@@ -1125,7 +1127,7 @@ class KMP:
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
         # Sleep for a little bit since request was successful
-        time.sleep(1)
+        time.sleep(self.__wait)
         
 
         # Create a new directory if packed or use artist directory for unpacked
@@ -1990,7 +1992,7 @@ def help() -> None:
         -d --downloadpath <path> : REQUIRED - Set download path for single instance, must use '\\' or '/'\n\
         -c --chunksz <#> : Adjust download chunk size in bytes (Default is 64M)\n\
         -t --threadct <#> : Change download thread count (default is 1, max is 5)\n\
-        -w --wait <#> : Delay between downloads in seconds (default is 0.25s)\n\
+        -w --wait <#> : Delay between downloads in seconds (default is 2.0s and cannot be set lower)\n\
         -b --track : Track artists which can updated later, not supported for discord\n\
         -a --predupe : Prepend () instead of postpending in duplicate file case\n\
         -g --updatedb <db_name.db>: Set db name to use for the update db (default is KMP.db)\n\
@@ -2115,7 +2117,7 @@ def main() -> None:
                 elif sys.argv[pointer] == '--RENAME':
                     rename = True
                     pointer += 1
-                    logging.info("UPDATE -> " + str(update))
+                    logging.info("RENAME -> " + str(rename))
                 elif sys.argv[pointer] == '--REUPDATE':
                     reupdate = True
                     pointer += 1
