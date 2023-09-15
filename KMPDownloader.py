@@ -39,12 +39,11 @@ Using multithreading
 @version 0.6.2.3
 @last modified 9/10/2023
 """
-request_headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0'}
-LOG_PATH = os.path.abspath(".") + "\\logs\\"
-LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"
-LOG_MUTEX = Lock()
-download_format_types = ["image", "audio", "video", "plain", "stream", "application", "7z", "audio"]
-KEMONO_URL = "https://kemono.su/artists"
+request_headers = {}                                                                                            # Headers to be used for python requests, modified later on since is constantly changing
+LOG_PATH = os.path.abspath(".") + "\\logs\\"                                                                    # Directory for logging
+LOG_NAME = LOG_PATH + "LOG - " + datetime.now(tz = timezone.utc).strftime('%a %b %d %H-%M-%S %Z %Y') +  ".txt"  # Name for log file to use
+LOG_MUTEX = Lock()                                                                                              # Mutex for log file
+download_format_types = ["image", "audio", "video", "plain", "stream", "application", "7z", "audio"]            # Download types for file attachments, can be modified by the user with switches
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -117,13 +116,14 @@ class KMP:
     __root:str                          # Root directory
     __scount:int                        # Number of files skipped
     __scount_mutex:Lock                 # lock for scount
+    __connection_timeout:int            # Timeout used for general connection issues
     #__wait_browser_cond:threading.Condition  # Conditional used for blocking when waiting on CAPTCHA to be completed
     #__browser_active:bool               # True if browser for captcha has been open, false if not
     #__browser_active_mutex:Lock         # Mutex used for browser_active
      
     def __init__(self, folder: str, unzip:bool, tcount: int | None, chunksz: int | None, ext_blacklist:list[str]|None = None , timeout:int = 30, http_codes:list[int] = None, post_name_exclusion:list[str]=[], download_server_name_type:bool = False,\
         link_name_exclusion:list[str] = [], wait:float = 0, db_name:str = "KMP.db", track:bool = False, update:bool = False, exclcomments:bool = False, exclcontents:bool = False, minsize:float = 0, predupe:bool = False, prefix:str = "https://kemono.party", 
-        disableprescan:bool = False, date:bool = False, id:bool = False, rename:bool = False, tempextr:bool = True, root:str = os.path.dirname(os.path.realpath(__file__)), **kwargs) -> None:
+        disableprescan:bool = False, date:bool = False, id:bool = False, rename:bool = False, tempextr:bool = True, root:str = os.path.dirname(os.path.realpath(__file__)), connect_timeout:int = 10, **kwargs) -> None:
         """
         Initializes all variables. Does not run the program
 
@@ -145,10 +145,17 @@ class KMP:
             predupe: True to prepend () in cases of dupe, false to postpend ()
             prefix: Prefix of kemono URL. Must include https and any other relevant parts of the URL and does not end in slash.
             disableprescan: True to disable prescan used to build temp dupe file database.
+            date: True to use date info for file names, False to not
+            id: True to use id info for file names, False to not
+            rename: True to rename and/or delete local files if a online version was found during archiving. NOTE: makes sure directory looks identical to online copy
+            tempextr: True to extract to a temp directory then move to dest directory, false to extract to the dest directory
+            root: Root directory for files, default is where KMPDownloader.py is located
+            connect_timeout: Timeout in seconds when a general connectivity error has occured.
             kwargs: not in use for now
         """
-        self.__wait_browser_cond = threading.Condition()
-        self.__browser_active = Lock()
+        self.__connection_timeout = connect_timeout
+        #self.__wait_browser_cond = threading.Condition()
+        #self.__browser_active = Lock()
         self.__root = root
         tname.id = None
         if folder:
@@ -295,11 +302,12 @@ class KMP:
         
     def __fregister_preload(self, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
-        Adds all files and their size to a hashtable
+        Registers all files and directories within a path to a Hashtable with multithreading
 
         Args:
             path (str): Directory path to walk
-            register (HashTable): If provided, appends to the hashtable
+            fregister (HashTable): If provided, appends to the hashtable
+            mutex (Lock): Mutex to be used with fregister
         Pre: path ends with '/' and uses '/'
         Returns:
             HashTable: Hashtable with all file records if register is None
@@ -335,10 +343,12 @@ class KMP:
         Given a file or dir name (not path), return a basename
 
         Args:
-            name (str): _description_
+            name (str): name of a file or directory
 
         Returns:
-            str: _description_
+            tuple (str): Size 1 or 2 tuple. Size 1 has basename of file while size 2 has basename
+                        in first position and an alternate basename in second position if it is impossible
+                        to derive just one basename from a name.
         """
         basename = name
         ext = name.rpartition('.')[2]
@@ -379,11 +389,24 @@ class KMP:
     
     def __fregister_preload_helper(self, pool:ThreadPool, dir:str, fregister:HashTable, mutex:Lock) -> None:
         """
-        Adds all files and their size to a hashtable
+        Helper function for __fregister_preload. Performs the operation of assigning thread task and recursively
+        visiting each directory and registering each file. 
+        
+        Data registered to fregtister in the following format:
+        
+        KVPair(base_name, [file1_name, file1_identifier, file2_name, file2_identifier...])
+        Where basename is the key which should be used when searching the hash table and the array
+        contains the values where each even position is the actual filename and odd position is the
+        file's unique identifier which includes file size, file content, and etc.
+        
+        Note that there may be multiple basenames for a single file depending on the format of the file
+        and the format of its parent directory.
         
         Args:
-            path (str): Directory path to walk
-            register (HashTable): If provided, appends to the hashtable
+            path (str): Workers to be used for the registering of files and folders
+            dir (str): directory to have the worker threads examine
+            fregister (HashTable): Table to register data to
+            mutex (Lock): Mutex for fregister
         Pre: path ends with '/' and uses '/'
         Returns:
             HashTable: Hashtable with all file records if register is None
@@ -466,7 +489,7 @@ class KMP:
         Resets register and download count, should be called if the KMP
         object will be reused; otherwise, downloaded url data will persist
         and file download and failed count will persist.
-        DEPRECATED, needs to be updated
+        TODO DEPRECATED, needs to be updated
         """
         self. __register = HashTable(10)
         self.__fcount = 0
@@ -500,7 +523,7 @@ class KMP:
                         self.__db.execute(("INSERT INTO Parent2 VALUES (?, ?, 'Kemono', ?, ?, ?)", (self.__urls[i], self.__artist[i], self.__latest_urls[i], self.__override_paths[i], str(self.__config) if not old_config else old_config),))
                     done = True
                 except sqlite3.OperationalError:
-                    traceback.print_exc()
+                    
                     logging.warning("Database is locked, waiting 10s before trying again".format(self.__db))
                     time.sleep(10)
         
@@ -591,8 +614,8 @@ class KMP:
                             return
                         else:
                             timeout += 1
-                            logging.warning("Kemono party is rate limiting this download, download restarted in 10 seconds:\nCode: " + str(r.status_code) + "\nSrc: " + src + "\nFname: " + fname)
-                            time.sleep(10)
+                            logging.warning(f"Kemono party is rate limiting this download, download restarted in {self.__connection_timeout} seconds:\nCode: " + str(r.status_code) + "\nSrc: " + src + "\nFname: " + fname)
+                            time.sleep(self.__connection_timeout)
                         
                     else:
                         logging.critical("(" + str(r.status_code) + ")" + "Link provided cannot be downloaded from, likely a dead link. Check HTTP code and src: \nSrc: " + src + "\nFname: " + fname)
@@ -603,12 +626,11 @@ class KMP:
             except requests.exceptions.Timeout:
                 logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                 time.sleep(20)
-            except(requests.exceptions.TooManyRedirects):
-                logging.warning("Redirects trap detected for {}, restarting download in 10 seconds".format(src))
-                time.sleep(10)
-            except(requests.exceptions.RequestException):
+            except(requests.exceptions.RequestException) as e:
+                logging.warning(f"{e.__class__.__name__} has occured for {src} ({notifcation}), thread sleeping for {self.__connection_timeout} seconds.")
+                
                 notifcation+=1
-                time.sleep(self.__wait)
+                time.sleep(self.__connection_timeout)
                 
                 if(notifcation % 10 == 0):
                     logging.warning("Connection has been retried multiple times on {url} for {f}, if problem persists, check https://status.kemono.party/".format(url=src, f=fname))
@@ -690,9 +712,10 @@ class KMP:
                             except requests.exceptions.Timeout:
                                 logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                                 time.sleep(20)      
-                            except(requests.exceptions.RequestException):
-                                logging.error("Connection timeout on {url}".format(url=src))
-                                time.sleep(5)
+                            except(requests.exceptions.RequestException) as e:
+                                logging.warning(f"{e.__class__.__name__} has occured for {src}, thread sleeping for {self.__connection_timeout} seconds.")
+                                
+                                time.sleep(self.__connection_timeout)
                                 
                         # Download the file with visual bars 
                         if display_bar:
@@ -730,9 +753,10 @@ class KMP:
                                 except requests.exceptions.Timeout:
                                     logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                                     time.sleep(20)
-                                except(requests.exceptions.RequestException):
-                                    logging.error("Connection error, retrying")
-                                    time.sleep(5)
+                                except(requests.exceptions.RequestException) as e:
+                                    logging.warning(f"{e.__class__.__name__} has occured for {src}, thread sleeping for {self.__connection_timeout} seconds.")
+                                    
+                                    time.sleep(self.__connection_timeout)
                                 except(Exception) as e:
                                     logging.error("Handled an unknown exception: {}".format(e.__class__.__name__))
                                     jutils.write_to_file(LOG_NAME, "Unknown Exception {exc} -> SRC: {src}, FNAME: {fname}\n".format(exc=e.__class__.__name__, code=str(r.status_code), src=src, fname=download_fname), LOG_MUTEX)
@@ -761,12 +785,14 @@ class KMP:
                                     self.__submit_failure("Extraction Failure -> FILE: {fname}\n".format(fname=download_fname))
                         else:
                             logging.warning("File not downloaded correctly, will be restarted!\nSrc: " + src + "\nFname: " + download_fname)
+                            time.sleep(self.__connection_timeout)
                             #headers = {'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36',
                             #        'Range': 'bytes=' + str(downloaded) + '-' + str(fullsize)}
                             #mode = 'ab'
-                    except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
-                        logging.debug("Chunked encoding error has occured, server has likely disconnected, download has restarted")
-                        time.sleep(5)
+                    except(requests.exceptions.RequestException) as e:
+                        logging.warning(f"{e.__class__.__name__} has occured for {src}, thread sleeping for {self.__connection_timeout} seconds.")
+                        
+                        time.sleep(self.__connection_timeout)
                     except FileNotFoundError:
                         logging.debug("Cannot be downloaded, file likely a link, not a file ->" + download_fname)
                         done = True
@@ -787,6 +813,7 @@ class KMP:
             session.close()
         
         # Sleep before exiting
+        logging.debug(f"Thread sleeping for {self.__wait} seconds after completing download")
         time.sleep(self.__wait)
 
     def __trim_fname(self, fname: str) -> str:
@@ -942,7 +969,7 @@ class KMP:
         if len(strBuilder) > 0:
             jutils.write_utf8("".join(strBuilder), dir, 'w')
 
-    def __dupe_file_check(self, org_fname:str, value):
+    def __dupe_file_check(self, org_fname:str, value)->bool:
         """
         Check if dupe file exists
 
@@ -964,24 +991,33 @@ class KMP:
     
     def __clear_empty(self, dir:str)->None:
         """
-        Clears a directory if it is empty
+        Deletes a directory if it is empty
 
         Args:
             dir (str): directory to check
+        Pre: Handler for exceptions
         """
         if len(os.listdir(dir)) == 0:
             os.rmdir(dir)
     
-    def __dupe_file_procedure(self, fname:str, org_fname:str, value:any, lock:bool = False):
+    def __dupe_file_procedure(self, fname:str, org_fname:str, value:any, lock:bool = False)->bool:
         """
-        Checks the 
+        Checks a file and determines if it already exists on the system. If self.__rename is true,
+        a duplicate file may be removed or renamed according to several factors:
+        1. If file exists but different name than fname, rename it to fname, return true
+        2. If file exists but different name than fname AND another file that is called fname exists, rename it to fname with a counter, return true
+        3. If file exists AND name is fname, return true
+        4. If file does not exists, return False
+        5. If file exists but different name than fname AND another file that is called fname exists and IS EQUAL to the file, delete file, return true
 
+        If self.__rename is false, return bool according to above factors.
+        
         Param:
             fname: Full name of file subjected to duplication check
             org_fname: Base name of file subjected to duplication check
             value: Characteristic of the file
             lock: True if self.__existing_file_register_lock is already acquired (will not be released)
-            
+        Return: True of the file already exists locally, false if not
         """
         writable = False
         if not lock:
@@ -990,12 +1026,10 @@ class KMP:
         values = self.__existing_file_register.hashtable_lookup_value(org_fname)
         # Check 3 conditions when renaming
         if values and self.__rename:
-            logging.info("checking")
             try:
                 # (1) Local file with same name and same size
                 index = values.index(value)
                 values_copy = values # Markoff list for values
-                logging.info(values)
                 try:
                     # Since case can occur multiple times, run until exception
                     while True:
@@ -1028,7 +1062,8 @@ class KMP:
                                 logging.debug("Base name already exists: {} in local file {}".format(org_fname, values[index + 1]))
                                 values_copy[index + 1] = None
                                 values[index] = None
-                        except (PermissionError, FileNotFoundError):
+                        except (PermissionError, FileNotFoundError) as e:
+                            logging.debug(f"{e.__class__.__name__} has occured, unable to perform dupe file procedure on {values[index + 1]} ({org_fname})")
                             values_copy[index + 1] = None
                             values_copy[index] = None
                         # Prepare for next iteration
@@ -1042,7 +1077,8 @@ class KMP:
                 # (2) File cannot be found locally
                 writable = True             
             # In cases where file does not exist but is in the register (when scanning a dir multiple times), this step should not be possible to obtain 
-            except FileNotFoundError:
+            except FileNotFoundError as e:
+                logging.debug(f"CRITICAL: {e.__class__.__name__} has occured, unable to perform dupe file procedure on {fname}")
                 self.__submit_failure("CRITICAL FAILURE (HASHTABLE); FNAME {src}".format(src=fname))
         # If does not exists, add it and write to file
         elif not values:
@@ -1106,14 +1142,15 @@ class KMP:
             except requests.exceptions.Timeout:
                 logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                 time.sleep(20)
-            except(requests.exceptions.RequestException):
-                 logging.debug("Connection timeout")
-                 time.sleep(5)
+            except(requests.exceptions.RequestException) as e:
+                logging.warning(f"{e.__class__.__name__} has occured for {url}, thread sleeping for {self.__connection_timeout} seconds.")
+                
+                time.sleep(self.__connection_timeout)
         soup = BeautifulSoup(reqs.text, 'html.parser')
         while "500 Internal Server Error" in soup.find("title"):
             logging.error("500 Server error encountered at " +
                           url + ", retrying...")
-            time.sleep(2)
+            time.sleep(self.__connection_timeout)
             reqs = None
             while not reqs:
                 try:
@@ -1121,12 +1158,15 @@ class KMP:
                 except requests.exceptions.Timeout:
                     logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                     time.sleep(20)
-                except(requests.exceptions.RequestException):
-                    logging.debug("Connection timeout")
-                    time.sleep(5)
+                except(requests.exceptions.RequestException) as e:
+                    logging.warning(f"{e.__class__.__name__} has occured for {url}, thread sleeping for {self.__connection_timeout} seconds.")
+                    
+                    time.sleep(self.__connection_timeout)
             soup = BeautifulSoup(reqs.text, 'html.parser')
         imgLinks = soup.find_all("a", {'class':'fileThumb'})
+        
         # Sleep for a little bit since request was successful
+        logging.debug(f"Threading sleeping for {self.__wait} seconds since connection request was successful")
         time.sleep(self.__wait)
         
 
@@ -1376,7 +1416,7 @@ class KMP:
                 return True
         return False
     
-    def __partial_unpack_post_process(self, src, dest)->None:
+    def __partial_unpack_post_process(self, src:str, dest:str)->None:
         """
         Checks if a folder in src is text only or empty, if so, move everything 
         from src to dest
@@ -1424,9 +1464,10 @@ class KMP:
             except requests.exceptions.Timeout:
                 logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                 time.sleep(20)
-            except(requests.exceptions.RequestException):
-                 logging.debug("Connection timeout")
-                 time.sleep(5)
+            except(requests.exceptions.RequestException) as e:
+                logging.warning(f"{e.__class__.__name__} has occured for {url}, thread sleeping for {self.__connection_timeout} seconds.")
+                
+                time.sleep(self.__connection_timeout)
         soup = BeautifulSoup(reqs.text, 'html.parser')
         reqs.close()
         # Create directory
@@ -1477,9 +1518,10 @@ class KMP:
                     except requests.exceptions.Timeout:
                         logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                         time.sleep(20)
-                    except(requests.exceptions.RequestException):
-                         logging.debug("Connection timeout")
-                         time.sleep(5)
+                    except(requests.exceptions.RequestException) as e:
+                        logging.warning(f"{e.__class__.__name__} has occured for {url + suffix + str(counter)}, thread sleeping for {self.__connection_timeout} seconds.")
+                        
+                        time.sleep(self.__connection_timeout)
                 soup = BeautifulSoup(reqs.text, 'html.parser')
                 reqs.close()
                 contLinks = soup.find_all("a", href=lambda href: href and "/post/" in href)
@@ -1492,6 +1534,7 @@ class KMP:
         """
         Downloads any file found in js and returns text data
 
+        TODO update
         Param:
             jsList: Kemono discord server json to download
             titleDir: Where to save data
@@ -1570,6 +1613,7 @@ class KMP:
         """
         Process a discord server
 
+        TODO UPDATE
         Param:
             serverJS: discord server json token, in format {"id":xxx,"name":xxx}
             titleDir: Where to store discord content, absolute directory ends with '\\'
@@ -1612,6 +1656,7 @@ class KMP:
         """ 
         Process discord kemono links using multithreading
 
+        TODO UPDATE
         Param:
             url: discord url
             titleDir: directory to store discord content
@@ -1680,9 +1725,10 @@ class KMP:
                 except requests.exceptions.Timeout:
                     logging.warning("Connection timed out, this may be due to CAPTCHA, please open Kemono and solve the captcha, program will sleep for 20 seconds")
                     time.sleep(20)
-                except(requests.exceptions.RequestException):
-                     logging.debug("Connection timeout")
-                     time.sleep(5)
+                except(requests.exceptions.RequestException) as e:
+                    logging.warning(f"{e.__class__.__name__} has occured for {url}, thread sleeping for {self.__connection_timeout} seconds.")
+                    
+                    time.sleep(self.__connection_timeout)
             if(reqs.status_code >= 400):
                 logging.error("Status code " + str(reqs.status_code))
             soup = BeautifulSoup(reqs.text, 'html.parser')
@@ -1749,7 +1795,7 @@ class KMP:
         threads.join_queue()
         threads.kill_threads()
 
-    def monitor_queue(self, q:Queue, resp:str|None=None):
+    def monitor_queue(self, q:Queue, resp:str|None=None)->None:
         """
         Block until q is joined, displays resp afterwards 
 
@@ -1760,9 +1806,10 @@ class KMP:
         if resp:
             logging.info(resp)
     
-    def __prog_bar(self, max:int):
+    def __prog_bar(self, max:int)->None:
         """
-        Display a progress bar, will be thread will be locked until max
+        Display a progress bar, thread will be locked until internal counter reaches max.
+        Counter is incremented when self.__progress is released
         """
         counter = 0
         with alive_progress.alive_bar(max, title='Files Downloaded:') as bar:
@@ -2245,8 +2292,10 @@ def main() -> None:
 
     # Run the downloader
     if folder or update or reupdate:
-        logging.warning("YOU MUST VISIT KEMONO.PARTY OR KEMONO.SU AND SOLVE THE CAPTCHA BEFORE RUNNING THE PROGRAM, IF THE PROGRAM IS STUCK, IT MEANS IT IS STUCK ON THE CAPTCHA")
-        
+        print("\n____________________________________________________________________________________________________")
+        logging.warning("YOU MAY NEED TO VISIT KEMONO.PARTY OR KEMONO.SU AND SOLVE THE CAPTCHA BEFORE RUNNING THE PROGRAM.")
+        logging.warning("IF YOUR DOWNLOAD APPEARS STUCK, UPDATE THE USER-AGENT IN user_agent.txt")
+        print("____________________________________________________________________________________________________\n")
         # Pull latest user agent
         with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "user-agent.txt")) as fd:
             agent = fd.read().strip()
