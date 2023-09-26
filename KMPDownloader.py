@@ -1503,8 +1503,11 @@ class KMP:
                 
                 # Generate check url
                 checkurl = content if "http" in content else self.__container_prefix + content
+                
+                if stop_url == None:
+                    stop_url = checkurl
                 # If stop url is encounter, return from the function
-                if(checkurl == stop_url):
+                elif(checkurl == stop_url):
                     return task_list
                 
                 pool.enqueue((self.__process_container, (content if "http" in content else self.__container_prefix + content, titleDir, task_list,)))
