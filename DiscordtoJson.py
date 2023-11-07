@@ -15,10 +15,10 @@ import cfscrape
 
 
 
-DISCORD_LOOKUP_API = "https://kemono.party/api/discord/channels/lookup?q="
-DISCORD_CHANNEL_CONTENT_PRE_API = "https://kemono.party/api/discord/channel/"
-DISCORD_CHANNEL_CONTENT_SUF_API = "?skip="
-DISCORD_CHANNEL_CONTENT_SKIP_INCRE = 25
+DISCORD_LOOKUP_API = "https://www.kemono.su/api/v1/discord/channel/lookup/"
+DISCORD_CHANNEL_CONTENT_PRE_API = "https://www.kemono.su/api/v1/discord/channel/"
+DISCORD_CHANNEL_CONTENT_SUF_API = "?o="
+DISCORD_CHANNEL_CONTENT_SKIP_INCRE = 150
 HEADERS={'User-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'}
 
 
@@ -125,6 +125,7 @@ class DiscordToJson():
         data = None
         # Process current task
         url = DISCORD_CHANNEL_CONTENT_PRE_API + channelID + DISCORD_CHANNEL_CONTENT_SUF_API + str(curr)
+        logging.info(f"scanning {url}")
         while not data:
             try:
                 data = scraper.get(url, timeout=5, headers=HEADERS)
@@ -160,6 +161,7 @@ class DiscordToJson():
         # If is done, broadcast to main thread
         else:
             main_sem.release()
+        
 
     def __calculate_additional_list_slots(self, l:list, p:int)->int:
         """
